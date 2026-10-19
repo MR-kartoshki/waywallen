@@ -2456,6 +2456,10 @@ Unsaved frame state may be lost.</source>
         <source>Untitled</source>
         <translation>Без названия</translation>
     </message>
+    <message>
+        <source>Update available</source>
+        <translation>Доступно обновление</translation>
+    </message>
 </context>
 <context>
     <name>WallpaperDetailPanel</name>
@@ -2681,6 +2685,14 @@ Unsaved frame state may be lost.</source>
         <source>Flip</source>
         <translation>Отражение</translation>
     </message>
+    <message>
+        <source>Update</source>
+        <translation>Обновление</translation>
+    </message>
+    <message>
+        <source>Update available</source>
+        <translation>Доступно обновление</translation>
+    </message>
 </context>
 <context>
     <name>WallpaperFilter</name>
@@ -2874,6 +2886,14 @@ Unsaved frame state may be lost.</source>
         <location filename="../qml/page/WallpaperInfoPage.qml" line="216"/>
         <source>Overrides</source>
         <translation>Изменённые свойства</translation>
+    </message>
+    <message>
+        <source>Update</source>
+        <translation>Обновление</translation>
+    </message>
+    <message>
+        <source>Update available</source>
+        <translation>Доступно обновление</translation>
     </message>
 </context>
 <context>

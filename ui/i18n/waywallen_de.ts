@@ -2545,6 +2545,10 @@ Ungespeicherter Bildzustand kann verloren gehen.</translation>
         <source>Untitled</source>
         <translation>Unbenannt</translation>
     </message>
+    <message>
+        <source>Update available</source>
+        <translation>Update verfügbar</translation>
+    </message>
 </context>
 <context>
     <name>WallpaperDetailPanel</name>
@@ -2769,6 +2773,14 @@ Ungespeicherter Bildzustand kann verloren gehen.</translation>
         <source>No display connected</source>
         <translation>Kein Bildschirm angeschlossen</translation>
     </message>
+    <message>
+        <source>Update</source>
+        <translation>Update</translation>
+    </message>
+    <message>
+        <source>Update available</source>
+        <translation>Update verfügbar</translation>
+    </message>
 </context>
 <context>
     <name>WallpaperFilter</name>
@@ -2962,6 +2974,14 @@ Ungespeicherter Bildzustand kann verloren gehen.</translation>
         <location filename="../qml/page/WallpaperInfoPage.qml" line="219"/>
         <source>Overrides</source>
         <translation>Geänderte Eigenschaften</translation>
+    </message>
+    <message>
+        <source>Update</source>
+        <translation>Update</translation>
+    </message>
+    <message>
+        <source>Update available</source>
+        <translation>Update verfügbar</translation>
     </message>
 </context>
 <context>

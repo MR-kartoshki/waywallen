@@ -94,6 +94,31 @@ Item {
                 rightPadding: 8
             }
 
+            Rectangle {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: 6
+                anchors.topMargin: root.wallpaper?.hidden ? 42 : 6
+                width: Math.min(updateLabel.implicitWidth + 16, parent.width - (root.selected ? 44 : 12))
+                height: 24
+                radius: 12
+                visible: root.wallpaper?.updateAvailable ?? false
+                color: MD.Token.color.tertiary_container
+
+                MD.Text {
+                    id: updateLabel
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    text: qsTr("Update available")
+                    typescale: MD.Token.typescale.label_small
+                    color: MD.Token.color.on_tertiary_container
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
+                }
+            }
+
             MouseArea {
                 property bool selectionRequestedByHold: false
 

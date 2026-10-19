@@ -7,6 +7,7 @@ mod m20260614_000001_wallpaper_layout_override;
 mod m20260816_000001_item_web_url;
 mod m20260825_000001_playlist_synchronized_selection;
 mod m20260929_000001_item_hidden;
+mod m20261019_000001_item_update_available;
 
 pub struct Migrator;
 
@@ -21,6 +22,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260816_000001_item_web_url::Migration),
             Box::new(m20260825_000001_playlist_synchronized_selection::Migration),
             Box::new(m20260929_000001_item_hidden::Migration),
+            Box::new(m20261019_000001_item_update_available::Migration),
         ]
     }
 }
