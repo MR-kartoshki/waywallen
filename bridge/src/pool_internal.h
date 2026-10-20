@@ -116,15 +116,18 @@ struct ww_pool {
     bool ready_sent;
     bool release_syncobj_sent;
 
-    /* `width` / `height` carried into apply_directive from
-     * advertise_caps when directive doesn't carry them; defensive. */
-    uint32_t probe_width;
-    uint32_t probe_height;
+    /* Legacy render extent supplied by advertise_caps. */
+    uint32_t   probe_width;
+    uint32_t   probe_height;
+    ww_pool_t* candidate;
 };
 
 /* Backend vtable. Each entry returns 0 on success or a negated errno
  * on failure unless documented otherwise. */
 struct ww_pool_backend_ops {
+    /* Borrow device/dispatch state, but own a separate empty allocation bank.
+     * The returned bank must support destroy independently of the source. */
+    int (*fork_allocation)(const ww_pool_t* source, ww_pool_t* candidate);
     /* Initialise backend-specific state from the init descriptor.
      * `init_data` is the corresponding `ww_pool_*_init_t`.
      * Establishes any GPU device resources (GBM device for EGL/GBM,

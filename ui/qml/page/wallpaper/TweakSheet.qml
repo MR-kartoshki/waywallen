@@ -54,25 +54,25 @@ MD.BottomSheet {
                     MD.SegmentedButton {
                         text: "1:1"
                         checked: Math.abs(control.tweak.itemAspectRatio - 1) < 0.001
-                        onClicked: control.tweak.setItemAspectRatio(1)
+                        onCheckedChangeRequested: control.tweak.setItemAspectRatio(1)
                     }
 
                     MD.SegmentedButton {
                         text: "4:3"
                         checked: Math.abs(control.tweak.itemAspectRatio - 4 / 3) < 0.001
-                        onClicked: control.tweak.setItemAspectRatio(4 / 3)
+                        onCheckedChangeRequested: control.tweak.setItemAspectRatio(4 / 3)
                     }
 
                     MD.SegmentedButton {
                         text: "16:9"
                         checked: Math.abs(control.tweak.itemAspectRatio - 16 / 9) < 0.001
-                        onClicked: control.tweak.setItemAspectRatio(16 / 9)
+                        onCheckedChangeRequested: control.tweak.setItemAspectRatio(16 / 9)
                     }
 
                     MD.SegmentedButton {
                         text: "9:16"
                         checked: Math.abs(control.tweak.itemAspectRatio - 9 / 16) < 0.001
-                        onClicked: control.tweak.setItemAspectRatio(9 / 16)
+                        onCheckedChangeRequested: control.tweak.setItemAspectRatio(9 / 16)
                     }
                 }
             }
@@ -101,7 +101,7 @@ MD.BottomSheet {
                     value: control.tweak.itemSize
                     valueText: qsTr("%1 px").arg(Math.round(value))
                     valueMaxText: qsTr("%1 px").arg(Math.round(to))
-                    onMoved: control.tweak.setItemSize(value)
+                    onValueChangeRequested: value => control.tweak.setItemSize(value)
                 }
             }
 
@@ -122,13 +122,13 @@ MD.BottomSheet {
                     MD.SegmentedButton {
                         text: qsTr("Fill cell")
                         checked: control.tweak.layoutMode === control.tweak.layoutFillCell
-                        onClicked: control.tweak.setLayoutMode(control.tweak.layoutFillCell)
+                        onCheckedChangeRequested: control.tweak.setLayoutMode(control.tweak.layoutFillCell)
                     }
 
                     MD.SegmentedButton {
                         text: qsTr("Fixed")
                         checked: control.tweak.layoutMode === control.tweak.layoutFixed
-                        onClicked: control.tweak.setLayoutMode(control.tweak.layoutFixed)
+                        onCheckedChangeRequested: control.tweak.setLayoutMode(control.tweak.layoutFixed)
                     }
                 }
             }
@@ -152,7 +152,7 @@ MD.BottomSheet {
                     value: Math.max(0, control.tweak.imageCacheOptions.indexOf(control.tweak.imageCacheMiB))
                     valueText: qsTr("%1 MiB").arg(control.tweak.imageCacheOptions[Math.round(value)])
                     valueMaxText: qsTr("512 MiB")
-                    onMoved: control.tweak.setImageCacheMiB(control.tweak.imageCacheOptions[Math.round(value)])
+                    onValueChangeRequested: value => control.tweak.setImageCacheMiB(control.tweak.imageCacheOptions[Math.round(value)])
                 }
 
                 MD.Text {

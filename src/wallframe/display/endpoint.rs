@@ -337,12 +337,24 @@ async fn handshake_steps(
     let mut window_observation_caps = None;
     let mut pause_effect_caps = None;
     let mut transition_caps = None;
+    let mut role = crate::wallframe::scheduler::DisplayRole::Desktop;
     if let Request::ClientCapabilities {
         window_observation,
         pause_effect,
         transition,
+        identity,
     } = reg
     {
+        if let Some(identity) = identity {
+            role = match identity.role {
+                0 => crate::wallframe::scheduler::DisplayRole::Desktop,
+                1 => crate::wallframe::scheduler::DisplayRole::LockScreen,
+                value => {
+                    log::warn!("unknown display role {value}; using desktop policy");
+                    crate::wallframe::scheduler::DisplayRole::Desktop
+                }
+            };
+        }
         window_observation_caps = window_observation.map(|caps| caps.flags & 15);
         pause_effect_caps = pause_effect
             .map(|caps| caps.flags & crate::wallframe::routing::PAUSE_EFFECT_CAPS_KNOWN);
@@ -432,6 +444,7 @@ async fn handshake_steps(
         drm.minor,
     );
     Ok(DisplayRegistration {
+        role,
         window_observation_caps,
         name,
         instance_id,
@@ -1462,93 +1475,108 @@ mod tests {
 
     #[tokio::test]
     async fn capabilities_handshake_accepts_legacy_and_independent_proposals() {
-        for (pause_effect, transition, legacy, expected) in [
-            (None, None, 15, (1, 7)),
-            (Some(0), None, 15, (0, 7)),
-            (None, Some(0), 15, (1, 0)),
-            (Some(0), Some(0), 15, (0, 0)),
-            (Some(1), Some(6), 0, (1, 6)),
-            (Some(1 << 31), Some(1 << 31), 15, (0, 0)),
-            (Some(u32::MAX), Some(u32::MAX), 0, (1, 7)),
-        ] {
-            for caps in [
-                None,
-                Some(None),
-                Some(Some(wire::WindowObservationCapabilities { flags: 3 })),
-                Some(Some(wire::WindowObservationCapabilities { flags: 15 })),
+        for role in [None, Some(0), Some(1), Some(42)] {
+            for (pause_effect, transition, legacy, expected) in [
+                (None, None, 15, (1, 7)),
+                (Some(0), None, 15, (0, 7)),
+                (None, Some(0), 15, (1, 0)),
+                (Some(0), Some(0), 15, (0, 0)),
+                (Some(1), Some(6), 0, (1, 6)),
+                (Some(1 << 31), Some(1 << 31), 15, (0, 0)),
+                (Some(u32::MAX), Some(u32::MAX), 0, (1, 7)),
             ] {
-                let (server, client) = StdUnixStream::pair().unwrap();
-                let expected_caps = caps.as_ref().and_then(|c| c.as_ref()).map(|c| c.flags);
-                let client = std::thread::spawn(move || {
-                    codec::send_request(
-                        &client,
-                        &Request::Hello {
-                            client_name: "test".into(),
-                            client_version: "test".into(),
-                            protocol_version: PROTOCOL_VERSION,
-                        },
-                        &[],
-                    )
-                    .unwrap();
-                    assert!(matches!(
-                        codec::recv_event(&client).unwrap().0,
-                        Event::Welcome { .. }
-                    ));
-                    if caps.is_some() || pause_effect.is_some() || transition.is_some() {
+                for caps in [
+                    None,
+                    Some(None),
+                    Some(Some(wire::WindowObservationCapabilities { flags: 3 })),
+                    Some(Some(wire::WindowObservationCapabilities { flags: 15 })),
+                ] {
+                    let (server, client) = StdUnixStream::pair().unwrap();
+                    let expected_caps = caps.as_ref().and_then(|c| c.as_ref()).map(|c| c.flags);
+                    let client = std::thread::spawn(move || {
                         codec::send_request(
                             &client,
-                            &Request::ClientCapabilities {
-                                window_observation: caps.flatten(),
-                                pause_effect: pause_effect
-                                    .map(|flags| wire::PauseEffectCapabilities { flags }),
-                                transition: transition
-                                    .map(|flags| wire::TransitionCapabilities { flags }),
+                            &Request::Hello {
+                                client_name: "test".into(),
+                                client_version: "test".into(),
+                                protocol_version: PROTOCOL_VERSION,
                             },
                             &[],
                         )
                         .unwrap();
-                    }
-                    codec::send_request(
-                        &client,
-                        &Request::RegisterDisplay {
-                            name: "DP-1".into(),
-                            instance_id: String::new(),
-                            metrics: wire::DisplayMetrics {
-                                width: 1920,
-                                height: 1080,
-                                refresh_mhz: 60000,
+                        assert!(matches!(
+                            codec::recv_event(&client).unwrap().0,
+                            Event::Welcome { .. }
+                        ));
+                        if caps.is_some()
+                            || pause_effect.is_some()
+                            || transition.is_some()
+                            || role.is_some()
+                        {
+                            codec::send_request(
+                                &client,
+                                &Request::ClientCapabilities {
+                                    identity: role.map(|role| wire::DisplayIdentity { role }),
+                                    window_observation: caps.flatten(),
+                                    pause_effect: pause_effect
+                                        .map(|flags| wire::PauseEffectCapabilities { flags }),
+                                    transition: transition
+                                        .map(|flags| wire::TransitionCapabilities { flags }),
+                                },
+                                &[],
+                            )
+                            .unwrap();
+                        }
+                        codec::send_request(
+                            &client,
+                            &Request::RegisterDisplay {
+                                name: "DP-1".into(),
+                                instance_id: String::new(),
+                                metrics: wire::DisplayMetrics {
+                                    width: 1920,
+                                    height: 1080,
+                                    refresh_mhz: 60000,
+                                },
+                                consumer_caps: wire::ConsumerCapabilities {
+                                    fourccs: vec![0x34325258],
+                                    mod_counts: vec![1],
+                                    modifiers: vec![0],
+                                    plane_counts: vec![1],
+                                    device_uuid: vec![0; 4],
+                                    driver_uuid: vec![0; 4],
+                                    drm_render_major: 226,
+                                    drm_render_minor: 128,
+                                    mem_hints: 1,
+                                    sync_caps: 1,
+                                    color_caps: 1,
+                                    extent_max_w: 7680,
+                                    extent_max_h: 4320,
+                                },
+                                presentation_caps: wire::PresentationCapabilities { flags: legacy },
+                                window_state_flags: 8,
                             },
-                            consumer_caps: wire::ConsumerCapabilities {
-                                fourccs: vec![0x34325258],
-                                mod_counts: vec![1],
-                                modifiers: vec![0],
-                                plane_counts: vec![1],
-                                device_uuid: vec![0; 4],
-                                driver_uuid: vec![0; 4],
-                                drm_render_major: 226,
-                                drm_render_minor: 128,
-                                mem_hints: 1,
-                                sync_caps: 1,
-                                color_caps: 1,
-                                extent_max_w: 7680,
-                                extent_max_h: 4320,
-                            },
-                            presentation_caps: wire::PresentationCapabilities { flags: legacy },
-                            window_state_flags: 8,
-                        },
-                        &[],
-                    )
-                    .unwrap();
-                });
-                let (events, _) = tokio::sync::broadcast::channel(4);
-                let (_shutdown_tx, mut shutdown) = tokio::sync::watch::channel(false);
-                let registration = do_handshake(&server, &events, &mut shutdown).await.unwrap();
-                assert_eq!(registration.window_observation_caps, expected_caps);
-                assert_eq!(
-                    (registration.pause_effect_caps, registration.transition_caps),
-                    expected
-                );
-                client.join().unwrap();
+                            &[],
+                        )
+                        .unwrap();
+                    });
+                    let (events, _) = tokio::sync::broadcast::channel(4);
+                    let (_shutdown_tx, mut shutdown) = tokio::sync::watch::channel(false);
+                    let registration = do_handshake(&server, &events, &mut shutdown).await.unwrap();
+                    assert_eq!(registration.window_observation_caps, expected_caps);
+                    assert_eq!(
+                        registration.role,
+                        if role == Some(1) {
+                            crate::wallframe::scheduler::DisplayRole::LockScreen
+                        } else {
+                            crate::wallframe::scheduler::DisplayRole::Desktop
+                        }
+                    );
+                    assert_eq!(
+                        (registration.pause_effect_caps, registration.transition_caps),
+                        expected
+                    );
+                    client.join().unwrap();
+                }
             }
         }
     }

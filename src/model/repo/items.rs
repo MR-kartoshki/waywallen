@@ -162,6 +162,15 @@ fn entry_from_item(
 pub async fn load_entries(
     db: &DatabaseConnection,
 ) -> Result<Vec<crate::catalog::entry::WallpaperEntry>> {
+    load_entries_excluding_libraries(db, &[]).await
+}
+
+/// Empty IDs hide nothing; unknown positive IDs do not affect existing libraries.
+pub async fn load_entries_excluding_libraries(
+    db: &DatabaseConnection,
+    hidden_library_ids: &[i64],
+) -> Result<Vec<crate::catalog::entry::WallpaperEntry>> {
+    let hidden_library_ids = normalize_library_ids(hidden_library_ids)?;
     let lib_path: HashMap<i64, String> = list_libraries(db)
         .await?
         .into_iter()
@@ -172,7 +181,16 @@ pub async fn load_entries(
         .into_iter()
         .map(|p| (p.id, p.name))
         .collect();
-    let items = list_items_all(db).await?;
+    let mut query = item::Entity::find();
+    if !hidden_library_ids.is_empty() {
+        query = query.filter(item::Column::LibraryId.is_not_in(hidden_library_ids));
+    }
+    let items = query
+        .order_by_asc(item::Column::LibraryId)
+        .order_by_asc(item::Column::Path)
+        .all(db)
+        .await
+        .context("select library items")?;
     Ok(items
         .into_iter()
         .filter_map(|it| {
@@ -267,6 +285,102 @@ pub async fn get_entries_ordered<C: ConnectionTrait>(
     }
 
     Ok(item_ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+pub async fn select_wallpapers<C: ConnectionTrait>(
+    conn: &C,
+    selection: &crate::catalog::query::WallpaperSelection,
+) -> Result<Vec<crate::catalog::entry::WallpaperEntry>> {
+    use crate::catalog::query::{FilterPredicate, FilterRule, HiddenFilter, StringMatch};
+    selection.validate()?;
+    let mut query = item::Entity::find().find_also_related(library::Entity);
+    if let Some(condition) = filter::wallpaper_query_to_condition(
+        &selection.filters,
+        &selection.logics,
+        &selection.search_text,
+    ) {
+        query = query.filter(condition);
+    }
+    if !selection.hidden_library_ids.is_empty() {
+        query =
+            query.filter(item::Column::LibraryId.is_not_in(selection.hidden_library_ids.clone()));
+    }
+    if !selection.wp_type.is_empty() {
+        query = query.filter(item::Column::Ty.eq(&selection.wp_type));
+    }
+    if !selection.skip_types.is_empty() {
+        query = query.filter(item::Column::Ty.is_not_in(selection.skip_types.clone()));
+    }
+    match selection.hidden {
+        HiddenFilter::Exclude => query = query.filter(item::Column::Hidden.eq(false)),
+        HiddenFilter::Only => query = query.filter(item::Column::Hidden.eq(true)),
+        HiddenFilter::Include => {}
+    }
+    let mut quick = Vec::new();
+    if !selection.filter_tags.is_empty() {
+        quick.push(FilterRule {
+            group: 0,
+            predicate: FilterPredicate::Tags {
+                values: selection.filter_tags.clone(),
+                condition: StringMatch::Is,
+            },
+        });
+    }
+    for rating in &selection.skip_content_ratings {
+        quick.push(FilterRule {
+            group: 0,
+            predicate: FilterPredicate::ContentRating {
+                value: rating.clone(),
+                condition: StringMatch::IsNot,
+            },
+        });
+    }
+    if let Some(condition) = filter::wallpaper_filters_to_condition(&quick, &[]) {
+        query = query.filter(condition);
+    }
+    let rows = query
+        .order_by_asc(item::Column::LibraryId)
+        .order_by_asc(item::Column::Path)
+        .order_by_asc(item::Column::Id)
+        .all(conn)
+        .await
+        .context("select wallpaper IDs")?;
+    let plugins = source_plugin::Entity::find()
+        .all(conn)
+        .await
+        .context("select wallpaper plugins")?
+        .into_iter()
+        .map(|plugin| (plugin.id, plugin.name))
+        .collect::<HashMap<_, _>>();
+    let entries = rows
+        .into_iter()
+        .filter_map(|(item, library)| {
+            library.map(|library| {
+                let plugin = plugins
+                    .get(&item.plugin_id)
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                entry_from_item(item, &library.path, plugin)
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut ordered: Vec<_> = entries.iter().collect();
+    crate::catalog::query::sort_entries(&mut ordered, &selection.sorts);
+    Ok(ordered.into_iter().cloned().collect())
+}
+
+pub async fn populate_entry_tags<C: ConnectionTrait>(
+    conn: &C,
+    entries: &mut [crate::catalog::entry::WallpaperEntry],
+) -> Result<()> {
+    for entries in entries.chunks_mut(500) {
+        let ids = entries.iter().map(|e| e.item_id).collect::<Vec<_>>();
+        let mut tags = list_tags_for_items(conn, &ids).await?;
+        for entry in entries {
+            entry.tags = tags.remove(&entry.item_id).unwrap_or_default();
+        }
+    }
+    Ok(())
 }
 
 pub async fn list_item_keys_by_wallpaper_filters(

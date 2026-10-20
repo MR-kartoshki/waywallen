@@ -2,6 +2,18 @@ use super::*;
 
 // library
 
+pub fn normalize_library_ids(ids: &[i64]) -> Result<Vec<i64>> {
+    if ids.iter().any(|id| *id <= 0) {
+        return Err(Error::InvalidArgument(
+            "library IDs must be positive".into(),
+        ));
+    }
+    let mut ids = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
 pub fn expand_home_path(path: &str) -> String {
     let Some(rest) = path.strip_prefix('~') else {
         return path.to_owned();
@@ -26,15 +38,70 @@ pub async fn add_library(
     plugin_id: i64,
     path: &str,
 ) -> Result<library::Model> {
+    add_named_library(db, plugin_id, path, None).await
+}
+
+pub async fn add_named_library(
+    db: &DatabaseConnection,
+    plugin_id: i64,
+    path: &str,
+    name: Option<&str>,
+) -> Result<library::Model> {
     let path = expand_home_path(path);
+    let txn = db.begin().await.context("begin library create")?;
+    let name = match name {
+        Some(name) => validate_library_name(name)?.to_owned(),
+        None => {
+            let used: HashSet<String> = library::Entity::find()
+                .select_only()
+                .column(library::Column::Name)
+                .into_tuple::<String>()
+                .all(&txn)
+                .await
+                .context("select library names")?
+                .into_iter()
+                .collect();
+            crate::model::library_name::default_name(&path, &used)
+        }
+    };
     let am = library::ActiveModel {
         plugin_id: Set(plugin_id),
         path: Set(path.clone()),
+        name: Set(name),
         ..Default::default()
     };
-    am.insert(db)
+    let library = am
+        .insert(&txn)
         .await
-        .with_context(|| format!("insert library plugin={plugin_id} path={path}"))
+        .with_context(|| format!("insert library plugin={plugin_id} path={path}"))?;
+    txn.commit().await.context("commit library create")?;
+    Ok(library)
+}
+
+fn validate_library_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::InvalidArgument(
+            "library name must not be empty".into(),
+        ));
+    }
+    Ok(name)
+}
+
+pub async fn rename_library(
+    db: &DatabaseConnection,
+    id: i64,
+    name: &str,
+) -> Result<library::Model> {
+    let name = validate_library_name(name)?;
+    let existing = library::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .context("select library to rename")?
+        .ok_or(Error::LibraryNotFound(id))?;
+    let mut am: library::ActiveModel = existing.into();
+    am.name = Set(name.to_owned());
+    am.update(db).await.context("rename library")
 }
 
 pub async fn find_library(

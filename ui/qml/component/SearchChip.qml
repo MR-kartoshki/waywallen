@@ -45,8 +45,8 @@ Item {
         MD.Ripple {
             anchors.fill: parent
             radius: parent.radius
-            pressed: m_mouse.pressed
-            stateOpacity: m_mouse.containsMouse
+            interactionSource: m_mouse.interactionSource
+            stateOpacity: mouseInteractions.hovered
                           ? MD.Token.state.hover.state_layer_opacity
                           : 0
             color: MD.MProp.color.on_surface_variant
@@ -58,12 +58,19 @@ Item {
         }
 
         // Clicking anywhere on the chip focuses the input.
-        MouseArea {
+        MD.InteractionObserver {
+            id: mouseInteractions
+            source: m_mouse.interactionSource
+        }
+
+        MD.Clickable {
             id: m_mouse
             anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.IBeamCursor
             onClicked: m_input.forceActiveFocus()
+
+            HoverHandler {
+                cursorShape: Qt.IBeamCursor
+            }
         }
 
         RowLayout {

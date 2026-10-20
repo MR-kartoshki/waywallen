@@ -259,6 +259,8 @@ pub async fn run(cli: DaemonConfig) -> anyhow::Result<()> {
         tasks: task_mgr.clone(),
         probe: probe.clone(),
         playlists: playback::playlist::Engine::new(),
+        wallpaper_changes: tokio::sync::watch::channel(0).0,
+        playlist_mutation: tokio::sync::Mutex::new(()),
         no_tray: cli.no_tray,
         tray: tokio::sync::Mutex::new(None),
     });
@@ -316,6 +318,19 @@ pub async fn run(cli: DaemonConfig) -> anyhow::Result<()> {
             "service/gamemode-monitor",
             async move {
                 system::gamemode::run(router, session_bus, shutdown).await;
+                Ok(())
+            },
+        );
+    }
+
+    {
+        let router = router.clone();
+        let shutdown = state.shutdown_subscribe();
+        state.tasks.spawn_async(
+            tasks::TaskKind::Service,
+            "service/power-monitor",
+            async move {
+                system::power::run(router, shutdown).await;
                 Ok(())
             },
         );
@@ -550,16 +565,27 @@ pub async fn run(cli: DaemonConfig) -> anyhow::Result<()> {
             });
     }
 
+    {
+        let app = state.clone();
+        state
+            .tasks
+            .spawn_async(tasks::TaskKind::Service, "playlist/refresh", async move {
+                application::playback::refresh_smart_playlists(app).await;
+                Ok(())
+            });
+    }
+
     // Background media-probe scheduler.
     // Pulls unprobed media items from the DB and fills metadata.
     {
         let probe_for_task = probe.clone();
         let db_for_task = db.clone();
         let shutdown_for_task = state.shutdown.subscribe();
+        let changes = state.wallpaper_changes.clone();
         state
             .tasks
             .spawn_async(tasks::TaskKind::Service, "probe/scheduler", async move {
-                probe::task::scheduler_loop(db_for_task, probe_for_task, shutdown_for_task)
+                probe::task::scheduler_loop(db_for_task, probe_for_task, shutdown_for_task, changes)
                     .await
                     .map_err(anyhow::Error::from)
             });

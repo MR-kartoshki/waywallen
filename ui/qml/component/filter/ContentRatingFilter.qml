@@ -36,7 +36,7 @@ QtObject {
             id: valueChip
             visible: root.condition !== WC.StringCondition.STRING_CONDITION_UNSPECIFIED
             text: W.I18n.valueLabel(root.valueLabels, root.value)
-            onClicked: valueMenu.open()
+            onSelectionRequested: valueMenu.open()
 
             MD.Menu {
                 id: valueMenu

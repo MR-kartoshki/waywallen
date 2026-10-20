@@ -232,8 +232,8 @@ MD.ApplicationWindow {
                     onAutoExpandChanged: if (autoExpand)
                         expanded = useEmbed
 
-                    onClicked: function (model) {
-                        win.currentPage = model.index;
+                    onCurrentIndexChangeRequested: function (index) {
+                        win.currentPage = index;
                     }
 
                     // Logo + a menu-toggle button (the rail's default header
@@ -321,13 +321,13 @@ MD.ApplicationWindow {
                                 width: parent.width
                                 expand: m_rail.useLarge
                                 expansionProgress: m_rail.expansionProgress
-                                checked: false
+                                selected: false
                                 icon.name: MD.Token.icon.extension
                                 iconStyle: MD.Enum.IconAndText
                                 collapsedIconStyle: MD.Enum.IconOnly
                                 text: qsTr("Plugins")
                                 property var presentation: null
-                                onClicked: {
+                                onSelectionRequested: {
                                     if (presentation?.active)
                                         return;
                                     presentation = win.presentPopup('waywallen.ui/PagePopup', {
@@ -340,13 +340,13 @@ MD.ApplicationWindow {
                                 width: parent.width
                                 expand: m_rail.useLarge
                                 expansionProgress: m_rail.expansionProgress
-                                checked: false
+                                selected: false
                                 icon.name: MD.Token.icon.settings
                                 iconStyle: MD.Enum.IconAndText
                                 collapsedIconStyle: MD.Enum.IconOnly
                                 text: qsTr("Settings")
                                 property var presentation: null
-                                onClicked: {
+                                onSelectionRequested: {
                                     if (presentation?.active)
                                         return;
                                     presentation = win.presentPopup('waywallen.ui/PagePopup', {
@@ -363,12 +363,12 @@ MD.ApplicationWindow {
                             width: parent.width
                             y: m_rail_footer.height + m_rail_footer.spacing * m_rail.expansionProgress
                             expand: true
-                            checked: false
+                            selected: false
                             icon.name: MD.Token.icon.info
                             text: qsTr("About")
                             height: implicitHeight * m_rail.expansionProgress
                             enabled: m_rail.expansionProgress === 1
-                            onClicked: win.showAbout()
+                            onSelectionRequested: win.showAbout()
                         }
                     }
                 }
@@ -423,8 +423,8 @@ MD.ApplicationWindow {
                                 anchors.bottomMargin: 16
                                 icon.name: parent.modelData.icon
                                 text: parent.modelData.name
-                                checked: win.currentPage === parent.index
-                                onClicked: win.currentPage = parent.index
+                                selected: win.currentPage === parent.index
+                                onSelectionRequested: win.currentPage = parent.index
                             }
                         }
                     }

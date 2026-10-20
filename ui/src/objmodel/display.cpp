@@ -91,6 +91,8 @@ auto Display::playlistStatusFromPb(const proto::PlaylistDisplayStatus* status) -
     m[u"position"_s]      = status->position();
     m[u"count"_s]         = status->count();
     m[u"remainingSecs"_s] = status->remainingSecs();
+    m[u"waiting"_s]       = status->waiting();
+    m[u"error"_s]         = status->error();
     return m;
 }
 

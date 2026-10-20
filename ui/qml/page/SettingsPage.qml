@@ -230,7 +230,8 @@ MD.Page {
         { key: "fullscreen",      label: qsTr("Fullscreen window") },
         { key: "sessionLocked",   label: qsTr("Session locked") },
         { key: "sessionInactive", label: qsTr("Session inactive") },
-        { key: "gamemode",        label: qsTr("GameMode is active") }
+        { key: "gamemode",        label: qsTr("GameMode is active") },
+        { key: "onBattery",       label: qsTr("On battery") }
     ]
 
     readonly property var kAutoActions: [
@@ -279,6 +280,7 @@ MD.Page {
             maximizedScope: WC.AutoScope.AUTO_SCOPE_CURRENT_DISPLAY,
             fullscreenScope: WC.AutoScope.AUTO_SCOPE_CURRENT_DISPLAY,
             gamemode: WC.AutoAction.AUTO_ACTION_NONE,
+            onBattery: WC.AutoAction.AUTO_ACTION_NONE,
             resumeDelayMs: 250,
             excludedApplicationIds: [],
             excludedWindowTitles: [],
@@ -476,7 +478,7 @@ MD.Page {
     function _updateAutoReplayAction(key, action) {
         root._mutAutoReplay(policy => {
             policy[key] = action;
-            if (key !== "sessionLocked" && key !== "sessionInactive") {
+            if (key !== "sessionLocked" && key !== "sessionInactive" && key !== "onBattery") {
                 policy[key + "Scope"] = action === WC.AutoAction.AUTO_ACTION_MUTE || action === WC.AutoAction.AUTO_ACTION_STOP
                     ? WC.AutoScope.AUTO_SCOPE_ALL_DISPLAYS
                     : WC.AutoScope.AUTO_SCOPE_CURRENT_DISPLAY;
@@ -641,6 +643,7 @@ MD.Page {
                         modelData.key === "sessionLocked"
                         || modelData.key === "sessionInactive"
                         || modelData.key === "gamemode"
+                        || modelData.key === "onBattery"
                     readonly property var actions: root.kAutoActions.filter(o => o.value !== WC.AutoAction.AUTO_ACTION_STOP || (modelData.key !== "anyWindow" && modelData.key !== "focused"))
                     readonly property int action: root._autoReplay()[modelData.key] ?? WC.AutoAction.AUTO_ACTION_NONE
                     readonly property bool selectableScope: !globalRule && (action === WC.AutoAction.AUTO_ACTION_PAUSE || (modelData.key === "fullscreen" && action === WC.AutoAction.AUTO_ACTION_STOP))

@@ -210,6 +210,17 @@ typedef struct ww_pool_slot_acquire_result {
 /* Read the current pool extent without acquiring a writable slot. */
 int ww_bridge_pool_get_extent(ww_pool_t* pool, uint32_t* out_width, uint32_t* out_height);
 
+/* One unpublished allocation at a time. Prepare/commit/abort and rendering
+ * must be serialized by the caller. Failure leaves the active allocation intact.
+ * The caller may render into candidate slots before publishing; drain/invalidate
+ * any cached GPU views before commit or abort. Device ownership is unchanged.
+ * Backends without allocation transactions return -ENOTSUP. */
+int  ww_bridge_pool_prepare_target(ww_pool_t* pool, const ww_pool_directive_t* directive,
+                                   uint32_t width, uint32_t height);
+int  ww_bridge_pool_candidate_slot(ww_pool_t* pool, uint32_t index, ww_pool_slot_t* out_slot);
+int  ww_bridge_pool_commit_target(ww_pool_t* pool, int sock, uint64_t* out_generation);
+void ww_bridge_pool_abort_target(ww_pool_t* pool);
+
 /* Acquire any slot whose previous release point has been signaled.
  * READY_* starts one transaction and returns its identity and writable
  * backend handle. BUSY never exposes a handle. At most one transaction

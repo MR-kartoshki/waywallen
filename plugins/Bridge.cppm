@@ -90,6 +90,7 @@ export inline constexpr uint32_t WW_DRM_FORMAT_BGRX8888 = OWE_WW_DRM_FORMAT_BGRX
 export using ::WW_EVT_IN_INIT;
 export using ::WW_EVT_IN_MUTE;
 export using ::WW_EVT_IN_NEGOTIATE_BUFFERS;
+export using ::WW_EVT_IN_CONFIGURE_RENDER_TARGET;
 export using ::WW_EVT_IN_PAUSE;
 export using ::WW_EVT_IN_PLAY;
 export using ::WW_EVT_IN_POINTER_AXIS;
@@ -126,6 +127,7 @@ export using ::WW_RESOLUTION_CAP_DEFAULT;
 export using ::WW_RESOLUTION_CAP_ALLOW_UPSCALE;
 export using ::WW_RESOLUTION_CUSTOM;
 export using ::WW_RESOLUTION_ORIGIN;
+export using ::WW_RESOLUTION_AUTO;
 export using ::VK_FORMAT_FEATURE_BLIT_DST_BIT;
 export using ::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 export using ::VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
@@ -142,6 +144,16 @@ export using ::ww_bridge_log_level_t;
 export using ::ww_bridge_pool_abort_acquired_slot;
 export using ::ww_bridge_pool_advertise_caps;
 export using ::ww_bridge_pool_apply_directive;
+export using ::ww_bridge_pool_prepare_target;
+export using ::ww_bridge_pool_candidate_slot;
+export using ::ww_bridge_pool_commit_target;
+export using ::ww_bridge_pool_abort_target;
+export using ::ww_bridge_render_target_directive;
+export using ::ww_bridge_send_render_target_capabilities;
+export using ::ww_bridge_send_render_target_result;
+export using ::waywallen_render_target_capabilities_t;
+export using ::waywallen_render_target_config_t;
+export using ::waywallen_render_target_outcome_t;
 export using ::ww_bridge_pool_create;
 export using ::ww_bridge_pool_destroy;
 export using ::ww_bridge_pool_get_extent;
@@ -251,7 +263,9 @@ export inline uint32_t ww_resolution_short_edge(int32_t r) {
 }
 
 export inline int32_t ww_resolution_sanitize(int32_t raw) {
-    if (raw == static_cast<int32_t>(WW_RESOLUTION_CUSTOM)) return raw;
+    if (raw == static_cast<int32_t>(WW_RESOLUTION_AUTO) ||
+        raw == static_cast<int32_t>(WW_RESOLUTION_CUSTOM))
+        return raw;
     if (raw < static_cast<int32_t>(WW_RESOLUTION_ORIGIN) ||
         raw > static_cast<int32_t>(WW_RESOLUTION_2160P))
         return static_cast<int32_t>(WW_RESOLUTION_1080P);

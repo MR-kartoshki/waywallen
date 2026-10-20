@@ -28,6 +28,7 @@ export class LibraryAddQuery : public Query,
     QML_ELEMENT
 
     Q_PROPERTY(QString path READ path WRITE setPath NOTIFY pathChanged)
+    Q_PROPERTY(QString name READ name WRITE setName NOTIFY nameChanged)
     Q_PROPERTY(QString pluginName READ pluginName WRITE setPluginName NOTIFY pluginNameChanged)
 
 public:
@@ -36,17 +37,47 @@ public:
     auto path() const -> const QString&;
     void setPath(const QString& v);
 
+    auto name() const -> const QString&;
+    void setName(const QString& v);
+
     auto pluginName() const -> const QString&;
     void setPluginName(const QString& v);
 
     void reload() override;
 
     Q_SIGNAL void pathChanged();
+    Q_SIGNAL void nameChanged();
     Q_SIGNAL void pluginNameChanged();
 
 private:
     QString m_path;
+    QString m_name;
     QString m_plugin_name;
+};
+
+export class LibraryRenameQuery : public Query,
+                                  public QueryExtra<control::v1::Response, LibraryRenameQuery> {
+    Q_OBJECT
+    QML_ELEMENT
+
+    Q_PROPERTY(qint64 libraryId READ libraryId WRITE setLibraryId NOTIFY libraryIdChanged)
+    Q_PROPERTY(QString name READ name WRITE setName NOTIFY nameChanged)
+
+public:
+    LibraryRenameQuery(QObject* parent = nullptr);
+
+    auto libraryId() const -> qint64;
+    void setLibraryId(qint64 v);
+    auto name() const -> const QString&;
+    void setName(const QString& v);
+    void reload() override;
+
+    Q_SIGNAL void libraryIdChanged();
+    Q_SIGNAL void nameChanged();
+
+private:
+    qint64  m_library_id = 0;
+    QString m_name;
 };
 
 export class LibraryAutoDetectQuery

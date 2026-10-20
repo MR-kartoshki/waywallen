@@ -36,7 +36,11 @@ export class WallpaperListQuery
     Q_PROPERTY(
         int hiddenFilter READ hiddenFilter WRITE setHiddenFilter NOTIFY hiddenFilterChanged FINAL)
     Q_PROPERTY(bool hasActiveFilters READ hasActiveFilters NOTIFY hasActiveFiltersChanged FINAL)
+    Q_PROPERTY(bool hasOtherFilters READ hasOtherFilters NOTIFY hasOtherFiltersChanged FINAL)
+    Q_PROPERTY(QList<qlonglong> hiddenLibraryIds READ hiddenLibraryIds WRITE setHiddenLibraryIds
+                   NOTIFY hiddenLibraryIdsChanged FINAL)
     Q_PROPERTY(qint32 total READ total NOTIFY totalChanged FINAL)
+    Q_PROPERTY(QVariant selection READ selection NOTIFY selectionChanged FINAL)
 
 public:
     WallpaperListQuery(QObject* parent = nullptr);
@@ -70,9 +74,17 @@ public:
     auto hiddenFilter() const -> int;
     void setHiddenFilter(int);
 
-    auto hasActiveFilters() const -> bool;
+    auto             hasActiveFilters() const -> bool;
+    auto             hasOtherFilters() const -> bool;
+    auto             hiddenLibraryIds() const -> const QList<qlonglong>&;
+    void             setHiddenLibraryIds(const QList<qlonglong>&);
+    Q_INVOKABLE void toggleLibraryHidden(qlonglong id);
 
-    auto total() const -> qint32;
+    auto             total() const -> qint32;
+    auto             selection() const -> QVariant;
+    Q_INVOKABLE void restoreSelection(const QVariant&);
+    Q_INVOKABLE bool matchesSelection(const QVariant&) const;
+    Q_SIGNAL void    selectionChanged();
 
     void reload() override;
     void fetchMore(qint32) override;
@@ -88,9 +100,17 @@ public:
     Q_SIGNAL void skipContentRatingsChanged();
     Q_SIGNAL void hiddenFilterChanged();
     Q_SIGNAL void hasActiveFiltersChanged();
+    Q_SIGNAL void hasOtherFiltersChanged();
+    Q_SIGNAL void hiddenLibraryIdsChanged();
     Q_SIGNAL void totalChanged();
 
 private:
+    auto listRequest() const -> control::v1::WallpaperListRequest;
+    void invalidateList();
+
+    QList<qlonglong>                        m_hidden_library_ids;
+    quint64                                 m_generation { 0 };
+    bool                                    m_reload_pending { false };
     QString                                 m_wp_type;
     QList<control::v1::WallpaperFilterRule> m_filters;
     QList<control::v1::FilterLogic>         m_filter_logics;

@@ -67,6 +67,35 @@ mod tests {
     }
 
     #[test]
+    fn display_identity_tagged_compatibility() {
+        let request = Request::ClientCapabilities {
+            identity: Some(generated::DisplayIdentity { role: 1 }),
+            window_observation: None,
+            pause_effect: None,
+            transition: None,
+        };
+        roundtrip_req(request.clone());
+        let mut body = Vec::new();
+        request.encode(&mut body);
+        let mut invalid_type = body.clone();
+        invalid_type[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(Request::decode(request.opcode(), &invalid_type).is_err());
+        let field = body[8..].to_vec();
+        let mut future_field = field.clone();
+        future_field[..4].copy_from_slice(&5u32.to_le_bytes());
+        body.extend(future_field);
+        let payload_size = (body.len() - 8) as u32;
+        body[4..8].copy_from_slice(&payload_size.to_le_bytes());
+        assert_eq!(Request::decode(request.opcode(), &body).unwrap(), request);
+        body.truncate(8 + field.len());
+        body.extend(field);
+        body[4..8].copy_from_slice(&payload_size.to_le_bytes());
+        assert!(Request::decode(request.opcode(), &body).is_err());
+        body.pop();
+        assert!(Request::decode(request.opcode(), &body).is_err());
+    }
+
+    #[test]
     fn independent_capabilities_roundtrip() {
         for pause_effect in [
             None,
@@ -79,6 +108,7 @@ mod tests {
                 Some(generated::TransitionCapabilities { flags: 7 }),
             ] {
                 roundtrip_req(Request::ClientCapabilities {
+                    identity: None,
                     window_observation: None,
                     pause_effect: pause_effect.clone(),
                     transition,

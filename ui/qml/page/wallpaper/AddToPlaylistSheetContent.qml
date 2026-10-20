@@ -38,9 +38,8 @@ ColumnLayout {
         MD.Text {
             Layout.fillWidth: true
             Layout.preferredHeight: 56
-            visible: !control.sheetState.playlistListLoading
-                  && control.sheetState.playlists.length === 0
-            text: qsTr("No playlists found")
+            visible: !control.sheetState.playlistListLoading && control.sheetState.playlists.length === 0
+            text: qsTr("No manual playlists found")
             typescale: MD.Token.typescale.body_medium
             color: MD.Token.color.on_surface_variant
             horizontalAlignment: Text.AlignHCenter
@@ -68,8 +67,7 @@ ColumnLayout {
                 radius: 12
                 text: modelData.name || qsTr("Untitled")
                 supportText: qsTr("%n wallpaper(s)", "", (modelData.entryIds || []).length)
-                enabled: control.sheetState.selectedWallpaperCount > 0
-                      && !control.sheetState.mutationQuerying
+                enabled: control.sheetState.selectedWallpaperCount > 0 && !control.sheetState.mutationQuerying
                 onClicked: control.sheetState.addToPlaylist(modelData)
 
                 trailing: MD.Icon {

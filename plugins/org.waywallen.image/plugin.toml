@@ -20,6 +20,7 @@ spawn_version = 10
 
 [renderers.waywallen-image.settings]
 fps = { type = "u32", default = 30, min = 1, max = 240, step = 1, identity = true, label = { msgid = "Frame rate" }, group = "render", group_label = { msgid = "Rendering" }, order = 10 }
-# 0 = origin, 1 = 720p, 2 = 1080p, 3 = 1440p, 4 = 2160p; short-edge cap, never upscales.
-resolution = { type = "i32", default = 0, min = 0, max = 4, step = 1, identity = true, label = { msgid = "Resolution" }, group = "render", group_label = { msgid = "Rendering" }, order = 15 }
+# -2 = auto, -1 = custom, 0 = origin, 1–4 = 720/1080/1440/2160p; never upscales.
+resolution = { type = "i32", default = -2, choices = ["-2", "-1", "0", "1", "2", "3", "4"], identity = true, label = { msgid = "Resolution" }, group = "render", group_label = { msgid = "Rendering" }, order = 15 }
+custom_extent = { type = "u32", default = 1080, min = 1, max = 8192, step = 1, identity = true, label = { msgid = "Custom resolution" }, group = "render", group_label = { msgid = "Rendering" }, order = 16 }
 render_node = { type = "string", default = "", identity = true, label = { msgid = "Render node" }, group = "render", group_label = { msgid = "Rendering" }, order = 20 }

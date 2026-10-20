@@ -9,6 +9,7 @@ use crate::wallframe::scheduler::DisplayId;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum DeadlineKey {
     RendererStart(RendererId),
+    RenderTarget(RendererId, u64),
     AutoReplayResume(super::auto_replay::Source),
 }
 

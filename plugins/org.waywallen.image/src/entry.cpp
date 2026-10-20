@@ -214,12 +214,16 @@ struct HostState {
     std::atomic<bool> negotiated { false };
 
     /* Reader → main negotiate handoff. */
-    std::mutex              neg_mu;
-    std::condition_variable neg_cv;
-    bool                    neg_pending { false };
-    bool                    frame_request_pending { false };
-    ww_pool_directive_t     neg_directive {};
-    std::mutex              send_mu;
+    std::mutex                             neg_mu;
+    std::condition_variable                neg_cv;
+    bool                                   neg_pending { false };
+    bool                                   frame_request_pending { false };
+    ww_pool_directive_t                    neg_directive {};
+    bool                                   target_pending { false };
+    waywallen_render_target_config_t       target_config {};
+    waywallen_render_target_capabilities_t target_caps {};
+    uint64_t                               target_revision {};
+    std::mutex                             send_mu;
 
     ClearColor scheme_color {};
 };
@@ -324,7 +328,7 @@ int cancel_slot_wait(void* userdata) {
     auto& host = *static_cast<HostState*>(userdata);
     if (host.shutdown.load(std::memory_order_acquire)) return 1;
     std::lock_guard<std::mutex> lk(host.neg_mu);
-    return host.neg_pending ? 1 : 0;
+    return host.neg_pending || host.target_pending ? 1 : 0;
 }
 
 enum class RepublishStatus
@@ -423,11 +427,12 @@ UploadStatus upload_to_slot(HostState& host, wavsen::video::Producer& producer,
     return UploadStatus::Submitted;
 }
 
-bool prepare_decoded_rgba(const Options& opt, ww_image::RgbaBuf& rgba) {
+bool prepare_decoded_rgba(const Options& opt, ww_image::ImageSession& session,
+                          ww_image::RgbaBuf& rgba) {
     if (! rgba.data.empty()) return true;
 
     ww_image::DecodeError error;
-    auto decoded = ww_image::decode_to_rgba(opt.image_path, opt.resolution, &error);
+    auto                  decoded = session.decode(opt.width, opt.height, &error);
     if (decoded.data.empty()) {
         rstd_error("waywallen-image-renderer: decode {}: {}", opt.image_path, error.message);
         return false;
@@ -492,8 +497,9 @@ void apply_user_properties(HostState& host, const char* json) {
  * slots up, upload RGBA into slot 0 and submit one frame. Static images
  * discard decode and upload storage after each negotiation. */
 void apply_negotiate_request(HostState& host, wavsen::video::Producer& producer, const Options& opt,
-                             ww_image::RgbaBuf& rgba, const ww_pool_directive_t& d) {
-    if (! prepare_decoded_rgba(opt, rgba)) {
+                             ww_image::ImageSession& session, ww_image::RgbaBuf& rgba,
+                             const ww_pool_directive_t& d) {
+    if (! prepare_decoded_rgba(opt, session, rgba)) {
         signal_shutdown(host);
         return;
     }
@@ -529,6 +535,83 @@ void apply_negotiate_request(HostState& host, wavsen::video::Producer& producer,
               static_cast<uint32_t>(d.path),
               static_cast<uint32_t>(d.memory_source),
               static_cast<unsigned long long>(d.format.modifier));
+}
+
+void apply_render_target(HostState& host, wavsen::video::Producer& producer,
+                         ww_image::ImageSession&                 session,
+                         const waywallen_render_target_config_t& config) {
+    waywallen_render_target_outcome_t result {};
+    result.revision = config.revision;
+    result.status   = 1;
+    std::string         message;
+    ww_pool_directive_t directive {};
+    int rc = ww_bridge_render_target_directive(&host.target_caps, &config, &directive);
+    if (rc == 0 && config.revision <= host.target_revision) rc = -ESTALE;
+    if (rc != 0) {
+        message = "invalid or stale render target";
+    } else {
+        host.target_revision = config.revision;
+        result.status        = 2;
+        ww_image::DecodeError error;
+        auto                  rgba = session.decode(config.width, config.height, &error);
+        if (rgba.data.empty())
+            message = error.message;
+        else if ((rc = ww_bridge_pool_prepare_target(
+                      host.pool, &directive, config.width, config.height)) != 0) {
+            if (rc != -ENOMEM && rc != -EBUSY && rc != -EPIPE) result.status = 3;
+            message = "prepare render target: " + std::to_string(rc);
+        } else {
+            ww_pool_slot_t slot {};
+            rc            = ww_bridge_pool_candidate_slot(host.pool, 0, &slot);
+            auto uploaded = producer.upload_into(reinterpret_cast<VkImage>(slot.vk_image),
+                                                 rstd::u32(slot.width),
+                                                 rstd::u32(slot.height),
+                                                 rgba.data.data(),
+                                                 rstd::usize(rgba.data.size()));
+            if (rc != 0 || uploaded.is_err())
+                message = "upload render target failed";
+            else {
+                int  sync_fd  = std::move(uploaded).unwrap();
+                auto released = producer.release_upload_buffer();
+                if (released.is_err()) {
+                    ::close(sync_fd);
+                    message = "drain upload failed";
+                } else {
+                    std::lock_guard<std::mutex> send_lk(host.send_mu);
+                    rc =
+                        ww_bridge_pool_commit_target(host.pool, host.sock, &result.pool_generation);
+                    if (rc == 0) {
+                        ww_pool_slot_acquire_result_t acquired {};
+                        rc = ww_bridge_pool_try_acquire_any_for_render(host.pool, &acquired);
+                        if (rc == 0 && acquired.status == WW_POOL_SLOT_ACQUIRE_READY_UNUSED &&
+                            acquired.slot.index == 0) {
+                            ww_pool_slot_submit_result_t submitted {};
+                            rc = ww_bridge_pool_submit_acquired_slot(
+                                host.pool, host.sock, &acquired.identity, sync_fd, &submitted);
+                            sync_fd = -1;
+                            if (rc == 0 && submitted.status == WW_POOL_SLOT_SUBMIT_SUBMITTED) {
+                                result.status = 0;
+                                result.width  = config.width;
+                                result.height = config.height;
+                                host.negotiated.store(true, std::memory_order_release);
+                            }
+                        }
+                    }
+                    if (sync_fd >= 0) ::close(sync_fd);
+                    if (result.status != 0) {
+                        message = "publish render target failed";
+                        signal_shutdown(host);
+                    }
+                }
+            }
+            ww_bridge_pool_abort_target(host.pool);
+        }
+        release_decoded_rgba(rgba);
+        (void)producer.release_upload_buffer();
+    }
+    result.message = message.data();
+    std::lock_guard<std::mutex> send_lk(host.send_mu);
+    if (ww_bridge_send_render_target_result(host.sock, &result) != 0) signal_shutdown(host);
 }
 
 void apply_control(HostState& host, ww_bridge_control_t& c) {
@@ -568,6 +651,13 @@ void apply_control(HostState& host, ww_bridge_control_t& c) {
         break;
     }
     case WW_EVT_IN_SHUTDOWN: signal_shutdown(host); break;
+    case WW_EVT_IN_CONFIGURE_RENDER_TARGET: {
+        std::lock_guard<std::mutex> lk(host.neg_mu);
+        host.target_config  = c.u.configure_render_target.config;
+        host.target_pending = true;
+        host.neg_cv.notify_all();
+        break;
+    }
     case WW_EVT_IN_NEGOTIATE_BUFFERS: {
         ww_pool_directive_t d = c.u.negotiate_buffers.directive;
         /* Static image: one slot is enough. */
@@ -872,6 +962,7 @@ int run(int argc, char** argv) {
         die(std::string(reason) + " rc=" + std::to_string(rc));
     }
 
+    uint32_t custom_extent = 1080;
     // Image path arrives via CLI argv `--path` (already parsed into
     // opt.image_path). Init carries only the resolved settings kv.
     for (size_t i = 0; i < init.settings.count; ++i) {
@@ -884,6 +975,11 @@ int run(int argc, char** argv) {
             long  n        = std::strtol(kv.value, &end, 10);
             opt.resolution = (end != kv.value) ? ww_resolution_sanitize(static_cast<int32_t>(n))
                                                : static_cast<int32_t>(WW_RESOLUTION_1080P);
+        } else if (std::strcmp(kv.key, "custom_extent") == 0 && *kv.value) {
+            char* end = nullptr;
+            long  n   = std::strtol(kv.value, &end, 10);
+            if (end != kv.value && *end == '\0' && n >= 1 && n <= 8192)
+                custom_extent = static_cast<uint32_t>(n);
         }
     }
     apply_user_properties(host, init.user_properties);
@@ -892,13 +988,32 @@ int run(int argc, char** argv) {
     /* --- Decode + Vulkan setup --- */
     if (opt.image_path.empty()) die("--path <image-file> is required");
     ww_image::DecodeError derr;
-    ww_image::RgbaBuf rgba_buf = ww_image::decode_to_rgba(opt.image_path, opt.resolution, &derr);
-    if (rgba_buf.data.empty()) die("decode " + opt.image_path + ": " + derr.message);
-
-    /* `decode_to_rgba` already applied the resolution cap against the
-     * image's native size; use whatever extent it landed on. */
-    opt.width  = rgba_buf.width;
-    opt.height = rgba_buf.height;
+    auto                  session = ww_image::ImageSession::open(opt.image_path, &derr);
+    if (! session) die("open " + opt.image_path + ": " + derr.message);
+    opt.width  = session->width();
+    opt.height = session->height();
+    ww_resolution_apply_short_edge(opt.resolution == WW_RESOLUTION_CUSTOM
+                                       ? custom_extent
+                                       : ww_resolution_short_edge(opt.resolution),
+                                   WW_RESOLUTION_CAP_DEFAULT,
+                                   &opt.width,
+                                   &opt.height);
+    ww_image::RgbaBuf rgba_buf;
+    if (opt.resolution != WW_RESOLUTION_AUTO) {
+        rgba_buf = session->decode(opt.width, opt.height, &derr);
+        if (rgba_buf.data.empty()) die("decode " + opt.image_path + ": " + derr.message);
+    } else {
+        host.target_caps = { .revision         = 1,
+                             .reference_width  = opt.width,
+                             .reference_height = opt.height,
+                             .mode             = 1,
+                             .min_width        = 1,
+                             .min_height       = 1,
+                             .max_width        = opt.width,
+                             .max_height       = opt.height,
+                             .width_alignment  = 1,
+                             .height_alignment = 1 };
+    }
 
     auto producer_res =
         opt.render_node.empty()
@@ -956,8 +1071,11 @@ int run(int argc, char** argv) {
         die("ww_bridge_pool_advertise_caps failed: " + std::to_string(rc));
 
     publish_clear_color(host, host.scheme_color);
+    if (opt.resolution == WW_RESOLUTION_AUTO &&
+        ww_bridge_send_render_target_capabilities(host.sock, &host.target_caps) != 0)
+        die("send render target capabilities failed");
     rstd_info("waywallen-image-renderer: ready, advertised caps, "
-              "waiting for NegotiateBuffers");
+              "waiting for allocation configuration");
 
     std::thread reader([&]() {
         reader_loop(host);
@@ -968,18 +1086,26 @@ int run(int argc, char** argv) {
     while (! host.shutdown.load(std::memory_order_acquire)) {
         std::unique_lock<std::mutex> lk(host.neg_mu);
         host.neg_cv.wait(lk, [&] {
-            return host.neg_pending ||
+            return host.target_pending || host.neg_pending ||
                    (host.frame_request_pending &&
                     host.negotiated.load(std::memory_order_acquire)) ||
                    host.shutdown.load(std::memory_order_acquire);
         });
         if (host.shutdown.load(std::memory_order_acquire)) break;
+        if (host.target_pending) {
+            auto config                = host.target_config;
+            host.target_pending        = false;
+            host.frame_request_pending = false;
+            lk.unlock();
+            apply_render_target(host, *producer, *session, config);
+            continue;
+        }
         if (host.neg_pending) {
             ww_pool_directive_t d      = host.neg_directive;
             host.neg_pending           = false;
             host.frame_request_pending = false;
             lk.unlock();
-            apply_negotiate_request(host, *producer, opt, rgba_buf, d);
+            apply_negotiate_request(host, *producer, opt, *session, rgba_buf, d);
             continue;
         }
         if (host.frame_request_pending) {

@@ -357,6 +357,12 @@
     <arg name="seq" type="u64"/>
   </request>
 
+  <struct name="display_identity" encoding="tagged">
+    <!-- 0 = desktop (legacy default), 1 = lock screen. Unknown values
+         retain desktop policy; role is not an authorization credential. -->
+    <field name="role" type="u32" tag="1"/>
+  </struct>
+
   <!-- Sent at most once after welcome, before register_display. Absence
        selects the legacy v9 path. Only declared extensions receive events. -->
   <request name="client_capabilities" opcode="14" encoding="tagged">
@@ -365,6 +371,8 @@
          including an explicit zero. Absence uses the legacy bits. -->
     <arg name="pause_effect" type="pause_effect_capabilities" tag="2" optional="true"/>
     <arg name="transition" type="transition_capabilities" tag="3" optional="true"/>
+    <!-- Registration metadata, not a capability bit. Immutable until reconnect. -->
+    <arg name="identity" type="display_identity" tag="4" optional="true"/>
   </request>
 
   <request name="set_window_observation_state" opcode="15" encoding="tagged">

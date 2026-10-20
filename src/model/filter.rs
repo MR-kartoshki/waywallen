@@ -9,7 +9,7 @@ use crate::catalog::query::{
     FilterLogic, FilterPredicate, FilterRule, IntMatch, LogicOperator, StringMatch,
 };
 
-use super::entities::{item, library};
+use super::entities::item;
 
 pub fn build_grouped_condition<'a, F, GFn, CFn>(
     filters: impl IntoIterator<Item = &'a F>,
@@ -126,12 +126,11 @@ pub fn wallpaper_filter_to_condition(filter: &FilterRule) -> Option<Condition> {
             &value.to_ascii_lowercase(),
             false,
         ),
-        FilterPredicate::Library { value, condition } => string_condition_to_condition(
-            || Expr::col((library::Entity, library::Column::Path)),
-            *condition,
-            value,
-            false,
-        ),
+        FilterPredicate::Library { value, exclude } => Some(Condition::all().add(if *exclude {
+            Expr::col((item::Entity, item::Column::LibraryId)).ne(*value)
+        } else {
+            Expr::col((item::Entity, item::Column::LibraryId)).eq(*value)
+        })),
         FilterPredicate::Width { value, condition } => int_condition_to_condition(
             || Expr::col((item::Entity, item::Column::Width)),
             *condition,
@@ -320,7 +319,7 @@ mod tests {
     use super::*;
     use crate::model::{
         connect_url,
-        entities::item,
+        entities::{item, library},
         repo::{self, ItemUpsertArgs},
     };
 

@@ -27,7 +27,7 @@ MD.TextField {
         enabled: root.canApply && root.acceptableInput
         Accessible.name: root.applyText
         onClicked: root.submit()
-        MD.ToolTip.visible: hovered
+        MD.ToolTip.visible: mdState.interactions.hovered
         MD.ToolTip.text: root.applyText
     }
 }

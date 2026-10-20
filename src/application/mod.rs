@@ -6,6 +6,7 @@ use crate::wallframe::scheduler::DisplayId;
 mod catalog;
 pub mod playback;
 mod plugins;
+pub mod wallpaper_query;
 
 pub use catalog::*;
 pub use playback::*;

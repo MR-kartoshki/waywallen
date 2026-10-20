@@ -59,6 +59,14 @@ void LibraryAddQuery::setPath(const QString& v) {
     }
 }
 
+auto LibraryAddQuery::name() const -> const QString& { return m_name; }
+void LibraryAddQuery::setName(const QString& v) {
+    if (m_name != v) {
+        m_name = v;
+        Q_EMIT nameChanged();
+    }
+}
+
 auto LibraryAddQuery::pluginName() const -> const QString& { return m_plugin_name; }
 void LibraryAddQuery::setPluginName(const QString& v) {
     if (m_plugin_name != v) {
@@ -77,6 +85,7 @@ void LibraryAddQuery::reload() {
     auto inner = proto::LibraryAddRequest {};
     inner.setPath(m_path);
     inner.setPluginName(m_plugin_name);
+    if (! m_name.trimmed().isEmpty()) inner.setName(m_name.trimmed());
     req.setLibraryAdd(std::move(inner));
 
     auto self = QWatcher { this };
@@ -85,6 +94,50 @@ void LibraryAddQuery::reload() {
         if (! co_await QAsyncResult::qexecutor()) co_return;
         if (! self) co_return;
 
+        self->inspect_set(result, [](const proto::Response&) {
+        });
+        co_return;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// LibraryRenameQuery
+// ---------------------------------------------------------------------------
+
+LibraryRenameQuery::LibraryRenameQuery(QObject* parent): Query(parent) {}
+
+auto LibraryRenameQuery::libraryId() const -> qint64 { return m_library_id; }
+void LibraryRenameQuery::setLibraryId(qint64 v) {
+    if (m_library_id != v) {
+        m_library_id = v;
+        Q_EMIT libraryIdChanged();
+    }
+}
+
+auto LibraryRenameQuery::name() const -> const QString& { return m_name; }
+void LibraryRenameQuery::setName(const QString& v) {
+    if (m_name != v) {
+        m_name = v;
+        Q_EMIT nameChanged();
+    }
+}
+
+void LibraryRenameQuery::reload() {
+    if (m_library_id <= 0 || m_name.trimmed().isEmpty()) return;
+
+    setStatus(Status::Querying);
+    auto backend = App::instance()->backend();
+    auto req     = proto::Request {};
+    auto inner   = proto::LibraryRenameRequest {};
+    inner.setId_proto(m_library_id);
+    inner.setName(m_name.trimmed());
+    req.setLibraryRename(std::move(inner));
+
+    auto self = QWatcher { this };
+    spawn([self, backend, req = std::move(req)]() mutable -> task<void> {
+        auto result = co_await backend->send(std::move(req));
+        if (! co_await QAsyncResult::qexecutor()) co_return;
+        if (! self) co_return;
         self->inspect_set(result, [](const proto::Response&) {
         });
         co_return;

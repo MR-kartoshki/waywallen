@@ -123,6 +123,125 @@ pub struct CanvasProjection {
     pub transform: u32,
 }
 
+pub fn project_surface(
+    texture: CanvasSize,
+    surface: CanvasSize,
+    source: LinkSrcRect,
+    dest: LinkDstRect,
+    layout: ResolvedLayout,
+    clear_rgba: [f32; 4],
+) -> CanvasProjection {
+    use crate::wallframe::routing::table::{FULL_DST, FULL_SRC};
+    if source == FULL_SRC && dest == FULL_DST {
+        let (width, height) = match layout.rotation {
+            Rotation::Cw90 | Rotation::Cw270 => (surface.height, surface.width),
+            _ => (surface.width, surface.height),
+        };
+        let out = layout::compute(LayoutInput {
+            tex_w: texture.width as f32,
+            tex_h: texture.height as f32,
+            disp_w: width as f32,
+            disp_h: height as f32,
+            fillmode: layout.fillmode,
+            location: layout.location,
+            clear_rgba,
+        });
+        return CanvasProjection {
+            source: LinkSrcRect {
+                x: out.source.0,
+                y: out.source.1,
+                w: out.source.2,
+                h: out.source.3,
+            },
+            dest: LinkDstRect {
+                x: out.dest.0,
+                y: out.dest.1,
+                w: out.dest.2,
+                h: out.dest.3,
+            },
+            transform: layout.transform(),
+        };
+    }
+    CanvasProjection {
+        source: LinkSrcRect {
+            w: if source.w.is_infinite() {
+                texture.width as f32
+            } else {
+                source.w
+            },
+            h: if source.h.is_infinite() {
+                texture.height as f32
+            } else {
+                source.h
+            },
+            ..source
+        },
+        dest: LinkDstRect {
+            w: if dest.w.is_infinite() {
+                surface.width as f32
+            } else {
+                dest.w
+            },
+            h: if dest.h.is_infinite() {
+                surface.height as f32
+            } else {
+                dest.h
+            },
+            ..dest
+        },
+        transform: layout.transform(),
+    }
+}
+
+/// Density in reference-content pixels, independent of the current pool.
+pub fn sampling_scale(projection: CanvasProjection, surface: CanvasSize) -> Option<f64> {
+    let source = projection.source;
+    let dest = projection.dest;
+    if [
+        source.x, source.y, source.w, source.h, dest.x, dest.y, dest.w, dest.h,
+    ]
+    .iter()
+    .any(|value| !value.is_finite())
+        || source.w <= 0.0
+        || source.h <= 0.0
+        || dest.w <= 0.0
+        || dest.h <= 0.0
+    {
+        return None;
+    }
+    let (width, height) = if projection.transform & 1 != 0 {
+        (surface.height, surface.width)
+    } else {
+        (surface.width, surface.height)
+    };
+    if dest.x >= width as f32
+        || dest.y >= height as f32
+        || dest.x + dest.w <= 0.0
+        || dest.y + dest.h <= 0.0
+    {
+        return None;
+    }
+    Some((f64::from(dest.w) / f64::from(source.w)).max(f64::from(dest.h) / f64::from(source.h)))
+}
+
+pub fn rescale_source(
+    source: LinkSrcRect,
+    reference: CanvasSize,
+    actual: CanvasSize,
+) -> LinkSrcRect {
+    if reference.width == 0 || reference.height == 0 {
+        return source;
+    }
+    let x = actual.width as f32 / reference.width as f32;
+    let y = actual.height as f32 / reference.height as f32;
+    LinkSrcRect {
+        x: source.x * x,
+        y: source.y * y,
+        w: source.w * x,
+        h: source.h * y,
+    }
+}
+
 pub fn project_canvas(
     texture_width: u32,
     texture_height: u32,
@@ -274,6 +393,123 @@ pub fn project_canvas(
 mod tests {
     use super::*;
     use crate::wallframe::display::layout::{FillMode, Location};
+
+    fn auto_layout(fillmode: FillMode) -> ResolvedLayout {
+        ResolvedLayout {
+            fillmode,
+            rotation: Rotation::Normal,
+            flip: crate::wallframe::display::layout::Flip::None,
+            location: Location::new(50, 50),
+        }
+    }
+
+    #[test]
+    fn auto_resolution_density_uses_layout_and_rotation() {
+        use crate::wallframe::routing::table::{FULL_DST, FULL_SRC};
+        let texture = CanvasSize {
+            width: 3840,
+            height: 2160,
+        };
+        let surface = CanvasSize {
+            width: 1080,
+            height: 1920,
+        };
+        for (fillmode, expected) in [
+            (FillMode::PreserveAspectFit, 1080.0 / 3840.0),
+            (FillMode::PreserveAspectCrop, 1920.0 / 2160.0),
+            (FillMode::Stretched, 1920.0 / 2160.0),
+            (FillMode::Centered, 1.0),
+        ] {
+            let layout = auto_layout(fillmode);
+            let projection =
+                project_surface(texture, surface, FULL_SRC, FULL_DST, layout, [0.0; 4]);
+            assert!((sampling_scale(projection, surface).unwrap() - expected).abs() < 0.0001);
+            let layout = ResolvedLayout {
+                rotation: Rotation::Cw90,
+                ..layout
+            };
+            let projection =
+                project_surface(texture, surface, FULL_SRC, FULL_DST, layout, [0.0; 4]);
+            let expected = if fillmode == FillMode::Centered {
+                1.0
+            } else {
+                0.5
+            };
+            assert!((sampling_scale(projection, surface).unwrap() - expected).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn auto_resolution_canvas_uses_full_extent_and_surface_density() {
+        let canvas = CanvasRect {
+            x: -1920,
+            y: 10,
+            width: 3840,
+            height: 1080,
+        };
+        let member = CanvasRect {
+            width: 1920,
+            ..canvas
+        };
+        let surface = CanvasSize {
+            width: 960,
+            height: 540,
+        };
+        let layout = auto_layout(FillMode::PreserveAspectFit);
+        let projection =
+            project_canvas(3840, 1080, 960, 540, canvas, member, layout, [0.0; 4]).unwrap();
+        assert_eq!(sampling_scale(projection, surface), Some(0.5));
+        let empty = CanvasRect {
+            x: -1920,
+            y: 10,
+            width: 100,
+            height: 100,
+        };
+        let projection =
+            project_canvas(100, 100, 960, 540, canvas, empty, layout, [0.0; 4]).unwrap();
+        assert_eq!(sampling_scale(projection, surface), None);
+    }
+
+    #[test]
+    fn auto_resolution_partial_source_scales_with_the_pool() {
+        let reference = CanvasSize {
+            width: 3840,
+            height: 2160,
+        };
+        let actual = CanvasSize {
+            width: 1920,
+            height: 1080,
+        };
+        let source = LinkSrcRect {
+            x: 960.0,
+            y: 540.0,
+            w: 1920.0,
+            h: 1080.0,
+        };
+        assert_eq!(
+            rescale_source(source, reference, actual),
+            LinkSrcRect {
+                x: 480.0,
+                y: 270.0,
+                w: 960.0,
+                h: 540.0
+            }
+        );
+        let projection = project_surface(
+            reference,
+            actual,
+            source,
+            LinkDstRect {
+                x: 0.0,
+                y: 0.0,
+                w: 960.0,
+                h: 540.0,
+            },
+            auto_layout(FillMode::PreserveAspectCrop),
+            [0.0; 4],
+        );
+        assert_eq!(sampling_scale(projection, actual), Some(0.5));
+    }
 
     #[test]
     fn canvas_flip_matches_whole_canvas_mapping() {

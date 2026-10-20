@@ -63,19 +63,30 @@ std::string av_err_str(int rc) {
 
 } // namespace
 
-RgbaBuf decode_to_rgba(const std::string& path, int32_t resolution, DecodeError* err) {
-    RgbaBuf out;
+struct ImageSession::Impl {
+    std::string path;
+    FmtCtxPtr   fmt;
+    int         video_index;
+    uint32_t    width;
+    uint32_t    height;
+};
 
+ImageSession::ImageSession(std::unique_ptr<Impl> impl): impl_(std::move(impl)) {}
+ImageSession::~ImageSession() = default;
+uint32_t ImageSession::width() const { return impl_->width; }
+uint32_t ImageSession::height() const { return impl_->height; }
+
+std::unique_ptr<ImageSession> ImageSession::open(const std::string& path, DecodeError* err) {
     AVFormatContext* raw_fmt = nullptr;
     if (int rc = avformat_open_input(&raw_fmt, path.c_str(), nullptr, nullptr); rc < 0) {
         fail(err, "avformat_open_input: " + av_err_str(rc));
-        return out;
+        return nullptr;
     }
     FmtCtxPtr fmt(raw_fmt);
 
     if (int rc = avformat_find_stream_info(fmt.get(), nullptr); rc < 0) {
         fail(err, "avformat_find_stream_info: " + av_err_str(rc));
-        return out;
+        return nullptr;
     }
 
     int video_idx = -1;
@@ -87,12 +98,43 @@ RgbaBuf decode_to_rgba(const std::string& path, int32_t resolution, DecodeError*
     }
     if (video_idx < 0) {
         fail(err, "no video/image stream in file");
-        return out;
+        return nullptr;
     }
 
-    AVStream*          st  = fmt->streams[video_idx];
-    AVCodecParameters* par = st->codecpar;
-    const AVCodec*     dec = avcodec_find_decoder(par->codec_id);
+    const auto* par = fmt->streams[video_idx]->codecpar;
+    if (par->width <= 0 || par->height <= 0) {
+        fail(err, "invalid image dimensions");
+        return nullptr;
+    }
+    auto impl         = std::make_unique<Impl>();
+    impl->path        = path;
+    impl->video_index = video_idx;
+    impl->width       = static_cast<uint32_t>(par->width);
+    impl->height      = static_cast<uint32_t>(par->height);
+    impl->fmt         = std::move(fmt);
+    return std::unique_ptr<ImageSession>(new ImageSession(std::move(impl)));
+}
+
+RgbaBuf ImageSession::decode(uint32_t target_w, uint32_t target_h, DecodeError* err) {
+    RgbaBuf out;
+    if (! target_w || ! target_h || target_w > width() || target_h > height()) {
+        fail(err, "invalid image target extent");
+        return out;
+    }
+    if (! impl_->fmt) {
+        auto reopened = open(impl_->path, err);
+        if (! reopened) return out;
+        if (reopened->width() != width() || reopened->height() != height()) {
+            fail(err, "image dimensions changed");
+            return out;
+        }
+        impl_ = std::move(reopened->impl_);
+    }
+    auto               fmt       = std::move(impl_->fmt);
+    int                video_idx = impl_->video_index;
+    AVStream*          st        = fmt->streams[video_idx];
+    AVCodecParameters* par       = st->codecpar;
+    const AVCodec*     dec       = avcodec_find_decoder(par->codec_id);
     if (! dec) {
         fail(err, std::string("no decoder for codec ") + avcodec_get_name(par->codec_id));
         return out;
@@ -167,12 +209,6 @@ RgbaBuf decode_to_rgba(const std::string& path, int32_t resolution, DecodeError*
         return out;
     }
 
-    /* Decode at the file's native size; apply_cap downscales when the
-     * user picked a numeric preset (never upscales for image). */
-    uint32_t target_w = static_cast<uint32_t>(src_w);
-    uint32_t target_h = static_cast<uint32_t>(src_h);
-    ww_resolution_apply_cap(resolution, WW_RESOLUTION_CAP_DEFAULT, &target_w, &target_h);
-
     SwsPtr sws(sws_getContext(src_w,
                               src_h,
                               src_fmt,
@@ -189,7 +225,8 @@ RgbaBuf decode_to_rgba(const std::string& path, int32_t resolution, DecodeError*
     }
 
     const uint32_t stride = target_w * 4;
-    out.data.assign(static_cast<size_t>(stride) * target_h, 0);
+    const size_t   bytes  = static_cast<size_t>(stride) * target_h;
+    out.data.assign(bytes + AV_INPUT_BUFFER_PADDING_SIZE, 0);
 
     uint8_t* dst_planes[4]  = { out.data.data(), nullptr, nullptr, nullptr };
     int      dst_strides[4] = { static_cast<int>(stride), 0, 0, 0 };
@@ -202,10 +239,19 @@ RgbaBuf decode_to_rgba(const std::string& path, int32_t resolution, DecodeError*
         return out;
     }
 
-    out.width  = target_w;
+    out.width = target_w;
+    out.data.resize(bytes);
     out.height = target_h;
     out.stride = stride;
     return out;
+}
+
+RgbaBuf decode_to_rgba(const std::string& path, int32_t resolution, DecodeError* err) {
+    auto session = ImageSession::open(path, err);
+    if (! session) return {};
+    uint32_t width = session->width(), height = session->height();
+    ww_resolution_apply_cap(resolution, WW_RESOLUTION_CAP_DEFAULT, &width, &height);
+    return session->decode(width, height, err);
 }
 
 } // namespace ww_image

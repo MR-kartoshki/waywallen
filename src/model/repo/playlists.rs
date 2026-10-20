@@ -1,10 +1,11 @@
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
 };
 
 use crate::error::{Error, Result, ResultExt};
 use crate::model::entities::{playlist, playlist_item};
+use crate::model::playlist_source::PlaylistSource;
 use crate::playback::Mode;
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,7 @@ pub struct Summary {
     pub synchronized_selection: bool,
     pub item_count: u32,
     pub revision: i64,
+    pub source: PlaylistSource,
 }
 
 #[derive(Debug, Clone)]
@@ -42,9 +44,32 @@ pub async fn create(
     now_ms: i64,
     entry_ids: &[i64],
 ) -> Result<i64> {
+    create_with_source(
+        db,
+        name,
+        mode,
+        interval_secs,
+        synchronized_selection,
+        now_ms,
+        &PlaylistSource::Curated(entry_ids.to_vec()),
+    )
+    .await
+}
+
+pub async fn create_with_source(
+    db: &DatabaseConnection,
+    name: &str,
+    mode: Mode,
+    interval_secs: u32,
+    synchronized_selection: bool,
+    now_ms: i64,
+    source: &PlaylistSource,
+) -> Result<i64> {
+    let encoded = source.encode_selection()?;
     let txn = db.begin().await.context("begin playlist create")?;
     let pl = playlist::ActiveModel {
         name: Set(name.to_owned()),
+        smart_selection: Set(encoded),
         mode: Set(mode.into()),
         interval_secs: Set(interval_secs as i64),
         synchronized_selection: Set(synchronized_selection),
@@ -55,7 +80,9 @@ pub async fn create(
     .insert(&txn)
     .await
     .context("insert playlist")?;
-    insert_items(&txn, pl.id, entry_ids).await?;
+    if let PlaylistSource::Curated(ids) = source {
+        insert_items(&txn, pl.id, ids).await?;
+    }
     txn.commit().await.context("commit playlist create")?;
     Ok(pl.id)
 }
@@ -80,40 +107,54 @@ async fn insert_items<C: sea_orm::ConnectionTrait>(
 }
 
 pub async fn list(db: &DatabaseConnection) -> Result<Vec<Summary>> {
+    let txn = db.begin().await.context("begin playlist list")?;
     let pls = playlist::Entity::find()
         .order_by_desc(playlist::Column::Id)
-        .all(db)
+        .all(&txn)
         .await
         .context("select playlists")?;
     let mut out = Vec::with_capacity(pls.len());
     for pl in pls {
-        let count = playlist_item::Entity::find()
-            .filter(playlist_item::Column::PlaylistId.eq(pl.id))
-            .count(db)
-            .await
-            .context("count playlist_item")? as u32;
+        let source = read_source(&txn, &pl).await?;
+        let count = match &source {
+            PlaylistSource::Curated(ids) => ids.len(),
+            PlaylistSource::Smart(selection) => {
+                super::select_wallpapers(&txn, selection).await?.len()
+            }
+        };
         out.push(Summary {
             id: pl.id,
             name: pl.name,
             mode: pl.mode.into(),
             interval_secs: u32::try_from(pl.interval_secs).unwrap_or(0),
             synchronized_selection: pl.synchronized_selection,
-            item_count: count,
+            item_count: count as u32,
             revision: pl.updated_at,
+            source,
         });
     }
+    txn.commit().await.context("commit playlist list")?;
     Ok(out)
 }
 
 pub async fn detail(db: &DatabaseConnection, id: i64) -> Result<Detail> {
     let txn = db.begin().await.context("begin playlist detail")?;
     let playlist = require(&txn, id).await?;
-    let entry_ids = entry_ids(&txn, id).await?;
-    let entries = super::get_entries_ordered(&txn, &entry_ids).await?;
-    if entries.len() != entry_ids.len() {
-        return Err(Error::PlaylistInvalid(format!(
-            "playlist {id} contains unavailable wallpapers"
-        )));
+    let source = read_source(&txn, &playlist).await?;
+    let mut entries = match &source {
+        PlaylistSource::Smart(selection) => super::select_wallpapers(&txn, selection).await?,
+        PlaylistSource::Curated(ids) => {
+            let entries = super::get_entries_ordered(&txn, ids).await?;
+            if entries.len() != ids.len() {
+                return Err(Error::PlaylistInvalid(format!(
+                    "playlist {id} contains unavailable wallpapers"
+                )));
+            }
+            entries
+        }
+    };
+    if source.is_smart() {
+        super::populate_entry_tags(&txn, &mut entries).await?;
     }
     let detail = Detail {
         summary: Summary {
@@ -124,6 +165,7 @@ pub async fn detail(db: &DatabaseConnection, id: i64) -> Result<Detail> {
             synchronized_selection: playlist.synchronized_selection,
             item_count: entries.len() as u32,
             revision: playlist.updated_at,
+            source,
         },
         entries,
     };
@@ -167,8 +209,39 @@ pub async fn update(
     expected_revision: Option<i64>,
     now_ms: i64,
 ) -> Result<UpdateChanges> {
+    update_with_source(
+        db,
+        id,
+        name,
+        mode,
+        interval_secs,
+        synchronized_selection,
+        &PlaylistSource::Curated(desired_entry_ids.to_vec()),
+        expected_revision,
+        now_ms,
+    )
+    .await
+}
+
+pub async fn update_with_source(
+    db: &DatabaseConnection,
+    id: i64,
+    name: &str,
+    mode: Mode,
+    interval_secs: u32,
+    synchronized_selection: bool,
+    source: &PlaylistSource,
+    expected_revision: Option<i64>,
+    now_ms: i64,
+) -> Result<UpdateChanges> {
+    let encoded = source.encode_selection()?;
     let txn = db.begin().await.context("begin update playlist")?;
     let playlist = require(&txn, id).await?;
+    if playlist.smart_selection.is_some() != source.is_smart() {
+        return Err(Error::PlaylistInvalid(
+            "playlist source cannot be converted".into(),
+        ));
+    }
     if let Some(expected) = expected_revision {
         if expected != playlist.updated_at {
             return Err(Error::PlaylistRevisionConflict {
@@ -179,13 +252,13 @@ pub async fn update(
     }
 
     let mode = playlist::PlaylistMode::from(mode);
-    let current_entry_ids = entry_ids(&txn, id).await?;
+    let current_source = read_source(&txn, &playlist).await?;
     let changes = UpdateChanges {
         name_changed: playlist.name != name,
         mode_changed: playlist.mode != mode,
         interval_changed: playlist.interval_secs != i64::from(interval_secs),
         synchronized_selection_changed: playlist.synchronized_selection != synchronized_selection,
-        items_changed: current_entry_ids != desired_entry_ids,
+        items_changed: &current_source != source,
     };
     if changes == UpdateChanges::default() {
         txn.commit().await.context("commit update playlist")?;
@@ -199,6 +272,7 @@ pub async fn update(
     active.interval_secs = Set(i64::from(interval_secs));
     active.synchronized_selection = Set(synchronized_selection);
     active.updated_at = Set(revision);
+    active.smart_selection = Set(encoded);
     active.update(&txn).await.context("update playlist")?;
     if changes.items_changed {
         playlist_item::Entity::delete_many()
@@ -206,7 +280,9 @@ pub async fn update(
             .exec(&txn)
             .await
             .context("clear playlist_item")?;
-        insert_items(&txn, id, desired_entry_ids).await?;
+        if let PlaylistSource::Curated(ids) = source {
+            insert_items(&txn, id, ids).await?;
+        }
     }
     txn.commit().await.context("commit update playlist")?;
     Ok(changes)
@@ -251,6 +327,11 @@ pub async fn set_items(
 ) -> Result<()> {
     let txn = db.begin().await.context("begin set_items")?;
     let pl = require(&txn, id).await?;
+    if pl.smart_selection.is_some() {
+        return Err(Error::PlaylistInvalid(
+            "smart playlists do not accept manual members".into(),
+        ));
+    }
     if let Some(expected) = expected_revision {
         if expected != pl.updated_at {
             return Err(Error::PlaylistRevisionConflict {
@@ -287,6 +368,20 @@ fn next_revision(current: i64, now_ms: i64) -> i64 {
     now_ms.max(current.saturating_add(1))
 }
 
+pub async fn revision(db: &DatabaseConnection, id: i64) -> Result<i64> {
+    Ok(require(db, id).await?.updated_at)
+}
+
+async fn read_source<C: sea_orm::ConnectionTrait>(
+    conn: &C,
+    playlist: &playlist::Model,
+) -> Result<PlaylistSource> {
+    match &playlist.smart_selection {
+        Some(encoded) => PlaylistSource::decode_selection(encoded),
+        None => Ok(PlaylistSource::Curated(entry_ids(conn, playlist.id).await?)),
+    }
+}
+
 async fn require<C: sea_orm::ConnectionTrait>(conn: &C, id: i64) -> Result<playlist::Model> {
     playlist::Entity::find_by_id(id)
         .one(conn)
@@ -302,6 +397,56 @@ mod tests {
 
     async fn mem_db() -> DatabaseConnection {
         crate::model::connect_url("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn smart_playlist_resolves_without_storing_members() {
+        use crate::catalog::query::WallpaperSelection;
+        let db = mem_db().await;
+        let selection = PlaylistSource::Smart(WallpaperSelection::default());
+        let id = create_with_source(&db, "smart", Mode::Sequential, 30, true, 1, &selection)
+            .await
+            .unwrap();
+        assert_eq!(detail(&db, id).await.unwrap().summary.item_count, 0);
+        let items = seed_items(&db, 2).await;
+        let result = detail(&db, id).await.unwrap();
+        assert_eq!(result.summary.item_count, 2);
+        assert_eq!(result.summary.revision, 1);
+        assert_eq!(result.summary.source, selection);
+        assert!(entry_ids(&db, id).await.unwrap().is_empty());
+        assert!(set_items(&db, id, &items, None, 2).await.is_err());
+        assert!(
+            update(&db, id, "bad", Mode::Random, 50, false, &items, None, 2)
+                .await
+                .is_err()
+        );
+        super::super::set_items_hidden(&db, &items, true)
+            .await
+            .unwrap();
+        assert_eq!(detail(&db, id).await.unwrap().summary.item_count, 0);
+        assert_eq!(detail(&db, id).await.unwrap().summary.revision, 1);
+        rename(&db, id, "renamed", 2).await.unwrap();
+        assert_eq!(detail(&db, id).await.unwrap().summary.name, "renamed");
+        let mut changed = WallpaperSelection::default();
+        changed.hidden = crate::catalog::query::HiddenFilter::Include;
+        update_with_source(
+            &db,
+            id,
+            "renamed",
+            Mode::Sequential,
+            30,
+            true,
+            &PlaylistSource::Smart(changed),
+            Some(2),
+            3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(detail(&db, id).await.unwrap().summary.item_count, 2);
+        let mut active: playlist::ActiveModel = require(&db, id).await.unwrap().into();
+        active.smart_selection = Set(Some("{}".into()));
+        active.update(&db).await.unwrap();
+        assert!(detail(&db, id).await.is_err());
     }
 
     async fn seed_items(db: &DatabaseConnection, count: usize) -> Vec<i64> {

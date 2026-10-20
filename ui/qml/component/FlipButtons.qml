@@ -29,13 +29,13 @@ Item {
         MD.SegmentedButton {
             text: qsTr("None")
             checked: !control.value || control.value === WC.Flip.FLIP_NONE
-            onClicked: control.selected(WC.Flip.FLIP_NONE)
+            onCheckedChangeRequested: control.selected(WC.Flip.FLIP_NONE)
         }
         MD.SegmentedButton {
             position: control.wrapped ? MD.Enum.PosLast : MD.Enum.PosMiddle
             text: qsTr("Horizontal")
             checked: control.value === WC.Flip.FLIP_HORIZONTAL
-            onClicked: control.selected(WC.Flip.FLIP_HORIZONTAL)
+            onCheckedChangeRequested: control.selected(WC.Flip.FLIP_HORIZONTAL)
         }
     }
     MD.SegmentedButtonGroup {
@@ -49,12 +49,12 @@ Item {
             position: control.wrapped ? MD.Enum.PosFirst : MD.Enum.PosMiddle
             text: qsTr("Vertical")
             checked: control.value === WC.Flip.FLIP_VERTICAL
-            onClicked: control.selected(WC.Flip.FLIP_VERTICAL)
+            onCheckedChangeRequested: control.selected(WC.Flip.FLIP_VERTICAL)
         }
         MD.SegmentedButton {
             text: qsTr("Both")
             checked: control.value === WC.Flip.FLIP_BOTH
-            onClicked: control.selected(WC.Flip.FLIP_BOTH)
+            onCheckedChangeRequested: control.selected(WC.Flip.FLIP_BOTH)
         }
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::application::ApplySource;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::repo::playlists as repository;
 use crate::playback::playlist::{
     Activation, ApplyPort, ApplyRequest, ApplySource as PlaylistApplySource, Definition, Target,
@@ -12,8 +12,6 @@ use crate::playback::playlist::{
 use crate::playback::Mode;
 use crate::wallframe::scheduler::DisplayId;
 use crate::DaemonContext;
-
-use super::resolve;
 
 #[derive(Clone, Copy)]
 enum AutoAttachUpdate {
@@ -140,16 +138,24 @@ async fn playlist_targets(
 }
 
 async fn definition(app: &Arc<DaemonContext>, playlist_id: i64) -> Result<Definition> {
-    let playlist = repository::get(&app.db, playlist_id)
-        .await?
-        .ok_or_else(|| Error::PlaylistNotFound(playlist_id.to_string()))?;
-    Ok(Definition {
+    let detail = repository::detail(&app.db, playlist_id).await?;
+    Ok(definition_from_detail(detail))
+}
+
+fn definition_from_detail(detail: repository::Detail) -> Definition {
+    let playlist = detail.summary;
+    Definition {
         id: playlist.id,
         mode: playlist.mode,
         interval_secs: playlist.interval_secs,
         synchronized_selection: playlist.synchronized_selection,
-        items: resolve::resolve(app, playlist_id).await?,
-    })
+        keep_empty: playlist.source.is_smart(),
+        items: detail
+            .entries
+            .iter()
+            .map(|e| e.item_id.to_string())
+            .collect(),
+    }
 }
 
 async fn display_settings_key(app: &Arc<DaemonContext>, display_id: DisplayId) -> Option<String> {
@@ -268,6 +274,7 @@ async fn activate_inner(
     first_frame_timeout: Option<Duration>,
     activation_source: ApplySource,
 ) -> Result<()> {
+    let _edit = app.playlist_mutation.lock().await;
     let definition = definition(app, playlist_id).await?;
     let targets = if display_ids.is_empty() {
         app.router
@@ -308,6 +315,8 @@ async fn activate_inner(
     }
     persist_assignments(app, &targets, Some(playlist_id), AutoAttachUpdate::Inherit).await;
     publish_changed(app);
+    app.wallpaper_changes
+        .send_modify(|generation| *generation += 1);
     Ok(())
 }
 
@@ -316,6 +325,7 @@ pub async fn attach(
     display_id: DisplayId,
     playlist_id: i64,
 ) -> Result<bool> {
+    let _edit = app.playlist_mutation.lock().await;
     let targets = playlist_targets(app, &[display_id]).await?;
     let Some(target) = targets.into_iter().next() else {
         return Ok(false);
@@ -347,6 +357,7 @@ pub async fn attach(
 }
 
 pub async fn deactivate(app: &Arc<DaemonContext>, display_ids: &[DisplayId]) -> Result<()> {
+    let _edit = app.playlist_mutation.lock().await;
     let targets = if display_ids.is_empty() {
         app.playlists.owned_display_ids().await
     } else {
@@ -406,11 +417,110 @@ pub async fn rebuild_for_playlist(app: &Arc<DaemonContext>, playlist_id: i64) {
     }
 }
 
+pub async fn refresh_smart_playlists(app: Arc<DaemonContext>) {
+    let mut changes = app.wallpaper_changes.subscribe();
+    changes.mark_changed();
+    let mut shutdown = app.shutdown_subscribe();
+    let mut failures: HashMap<i64, (u64, tokio::time::Instant)> = HashMap::new();
+    let mut last_generation = None;
+    loop {
+        let next_retry = failures.values().map(|(_, deadline)| *deadline).min();
+        let deadline =
+            next_retry.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(30));
+        tokio::select! {
+            changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { break; },
+            changed = changes.changed() => if changed.is_err() { break; },
+            _ = tokio::time::sleep_until(deadline), if next_retry.is_some() => {},
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+            _ = shutdown.changed() => break,
+        }
+        let generation = *changes.borrow_and_update();
+        let data_changed = last_generation != Some(generation);
+        if data_changed {
+            publish_changed(&app);
+        }
+        last_generation = Some(generation);
+        let tickets = app.playlists.refresh_tickets().await;
+        let active: HashSet<_> = tickets.iter().map(|ticket| ticket.playlist_id()).collect();
+        failures.retain(|id, _| active.contains(id));
+        for ticket in tickets {
+            let id = ticket.playlist_id();
+            if !data_changed && !failures.contains_key(&id) {
+                continue;
+            }
+            if failures
+                .get(&id)
+                .is_some_and(|(_, deadline)| *deadline > tokio::time::Instant::now())
+            {
+                continue;
+            }
+            let result: Result<()> = async {
+                let detail = repository::detail(&app.db, id).await?;
+                let revision = detail.summary.revision;
+                let definition = definition_from_detail(detail);
+                let _edit = app.playlist_mutation.lock().await;
+                if *changes.borrow() != generation
+                    || repository::revision(&app.db, id).await? != revision
+                {
+                    return Ok(());
+                }
+                let before = app.playlists.status().await;
+                app.playlists
+                    .refresh(
+                        ticket.clone(),
+                        definition,
+                        apply_port(&app, ApplySource::UserPlaylistActivation),
+                    )
+                    .await?;
+                let after = app.playlists.status().await;
+                if before
+                    .iter()
+                    .map(|s| (&s.current_id, s.count, &s.error))
+                    .collect::<Vec<_>>()
+                    != after
+                        .iter()
+                        .map(|s| (&s.current_id, s.count, &s.error))
+                        .collect::<Vec<_>>()
+                {
+                    publish_changed(&app);
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                log::warn!("smart playlist {id} refresh failed: {error:#}");
+                if app
+                    .playlists
+                    .refresh_error(&ticket, error.to_string())
+                    .await
+                {
+                    publish_changed(&app);
+                }
+                let delay = failures
+                    .get(&id)
+                    .map_or(2, |(delay, _)| (delay * 2).min(30));
+                failures.insert(
+                    id,
+                    (
+                        delay,
+                        tokio::time::Instant::now() + Duration::from_secs(delay),
+                    ),
+                );
+            } else {
+                failures.remove(&id);
+            }
+        }
+    }
+}
+
 pub(super) async fn stop_for_wallpaper_override(
     app: &Arc<DaemonContext>,
     display_ids: &[DisplayId],
     all_displays: bool,
 ) -> Result<Vec<crate::application::StoppedPlaylist>> {
+    let _edit = app.playlist_mutation.lock().await;
     if display_ids.is_empty() {
         return Ok(Vec::new());
     }

@@ -404,6 +404,104 @@ static void free_kv_list(ww_kv_list_t *a) {
  * Per-message implementations
  * ====================================================================== */
 
+
+static void tagged_patch_u32(ww_buf_t *b, size_t pos, uint32_t value) {
+    for (size_t i = 0; i < 4; ++i) b->data[pos + i] = (uint8_t)(value >> (8 * i));
+}
+
+typedef struct {
+    ww_rd_t body;
+    uint32_t tags[256];
+    size_t count;
+} ww_tagged_reader_t;
+
+static int tagged_begin(ww_rd_t *r, ww_tagged_reader_t *out) {
+    uint32_t revision, len;
+    int rc = rd_u32(r, &revision);
+    if (rc) return rc;
+    if ((rc = rd_u32(r, &len))) return rc;
+    if (len > 65520 || len % 4 != 0) return WW_ERR_BAD_ARRAY;
+    if ((rc = rd_need(r, len))) return rc;
+    out->body = (ww_rd_t){r->buf + r->pos, 0, revision == 1 ? len : 0};
+    out->count = 0;
+    r->pos += len;
+    return WW_OK;
+}
+
+static int tagged_next(ww_tagged_reader_t *r, uint32_t *tag, uint32_t *kind, ww_rd_t *value) {
+    uint32_t len;
+    int rc;
+    if (r->count == 256) return WW_ERR_BAD_ARRAY;
+    if ((rc = rd_u32(&r->body, tag))) return rc;
+    if ((rc = rd_u32(&r->body, kind))) return rc;
+    if ((rc = rd_u32(&r->body, &len))) return rc;
+    if (*tag == 0 || len % 4 != 0) return WW_ERR_BAD_ARRAY;
+    for (size_t i = 0; i < r->count; ++i) {
+        if (r->tags[i] == *tag) return WW_ERR_BAD_ARRAY;
+    }
+    r->tags[r->count++] = *tag;
+    if ((rc = rd_need(&r->body, len))) return rc;
+    *value = (ww_rd_t){r->body.buf + r->body.pos, 0, len};
+    r->body.pos += len;
+    return WW_OK;
+}
+
+static bool tagged_utf8(const uint8_t *s, size_t len) {
+    for (size_t i = 0; i < len;) {
+        uint32_t c = s[i++];
+        if (c < 0x80) continue;
+        size_t n;
+        uint32_t minimum;
+        if (c >= 0xc2 && c <= 0xdf) { n = 1; minimum = 0x80; c &= 0x1f; }
+        else if (c >= 0xe0 && c <= 0xef) { n = 2; minimum = 0x800; c &= 0x0f; }
+        else if (c >= 0xf0 && c <= 0xf4) { n = 3; minimum = 0x10000; c &= 7; }
+        else return false;
+        if (n > len - i) return false;
+        while (n--) {
+            if ((s[i] & 0xc0) != 0x80) return false;
+            c = (c << 6) | (s[i++] & 0x3f);
+        }
+        if (c < minimum || c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff)) return false;
+    }
+    return true;
+}
+
+static int tagged_validate_value(uint32_t kind, ww_rd_t *r) {
+    uint32_t len;
+    int rc;
+    if (kind >= 0x100 || kind == 9) {
+        if ((rc = rd_u32(r, &len))) return rc;
+        if (len > 1024) return WW_ERR_BAD_ARRAY;
+        for (uint32_t i = 0; i < len; ++i) {
+            if ((rc = tagged_validate_value(kind == 9 ? 8 : kind - 0x100, r))) return rc;
+            if (kind == 9 && (rc = tagged_validate_value(8, r))) return rc;
+        }
+        return WW_OK;
+    }
+    if (kind == 8) {
+        if ((rc = rd_u32(r, &len))) return rc;
+        if (len == 0 || len > 4097) return WW_ERR_BAD_STRING;
+        size_t padded = ((size_t)len + 3) & ~(size_t)3;
+        if ((rc = rd_need(r, padded))) return rc;
+        const uint8_t *s = r->buf + r->pos;
+        if (memchr(s, 0, len - 1) || !tagged_utf8(s, len - 1)) return WW_ERR_BAD_STRING;
+        for (size_t i = len - 1; i < padded; ++i) if (s[i]) return WW_ERR_BAD_STRING;
+        r->pos += padded;
+        return WW_OK;
+    }
+    if (kind == 11) {
+        uint32_t revision;
+        if ((rc = rd_u32(r, &revision))) return rc;
+        if ((rc = rd_u32(r, &len))) return rc;
+    } else len = (kind == 4 || kind == 5 || kind == 7) ? 8 : (kind == 10 ? 16 : 4);
+    if ((rc = rd_need(r, len))) return rc;
+    r->pos += len;
+    return WW_OK;
+}
+
+static int tagged_validate(uint32_t kind, ww_rd_t value) {
+    return tagged_validate_value(kind, &value);
+}
 static int w_pointer_button_state(ww_buf_t *b, waywallen_pointer_button_state_t v) {
     return w_u32(b, (uint32_t)v);
 }
@@ -1091,6 +1189,633 @@ void waywallen_producer_capabilities_free(waywallen_producer_capabilities_t *val
     memset(value, 0, sizeof(*value));
 }
 
+static int w_render_target_capabilities(ww_buf_t *b, const waywallen_render_target_capabilities_t *v) {
+    int rc;
+    if ((rc = w_u32(b, 1))) return rc;
+    size_t body_length_pos = b->len;
+    if ((rc = w_u32(b, 0))) return rc;
+    {
+        if ((rc = w_u32(b, 1))) return rc;
+        if ((rc = w_u32(b, 4))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u64(b, v->revision))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 2))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->reference_width))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 3))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->reference_height))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 4))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->mode))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 5))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->min_width))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 6))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->min_height))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 7))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->max_width))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 8))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->max_height))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 9))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->width_alignment))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 10))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->height_alignment))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    if (b->len - body_length_pos - 4 > 65520) return WW_ERR_OVERFLOW;
+    tagged_patch_u32(b, body_length_pos, (uint32_t)(b->len - body_length_pos - 4));
+    return WW_OK;
+}
+
+static int rd_render_target_capabilities(ww_rd_t *r, waywallen_render_target_capabilities_t *v) {
+    int rc;
+    ww_tagged_reader_t fields;
+    if ((rc = tagged_begin(r, &fields))) return rc;
+    bool seen_revision = false;
+    bool seen_reference_width = false;
+    bool seen_reference_height = false;
+    bool seen_mode = false;
+    bool seen_min_width = false;
+    bool seen_min_height = false;
+    bool seen_max_width = false;
+    bool seen_max_height = false;
+    bool seen_width_alignment = false;
+    bool seen_height_alignment = false;
+    while (fields.body.pos != fields.body.len) {
+        uint32_t tag, kind;
+        ww_rd_t field;
+        if ((rc = tagged_next(&fields, &tag, &kind, &field))) return rc;
+        switch (tag) {
+        case 1:
+            if (kind != 4) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u64(&field, &v->revision))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_revision = true;
+            break;
+        case 2:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->reference_width))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_reference_width = true;
+            break;
+        case 3:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->reference_height))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_reference_height = true;
+            break;
+        case 4:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->mode))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_mode = true;
+            break;
+        case 5:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->min_width))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_min_width = true;
+            break;
+        case 6:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->min_height))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_min_height = true;
+            break;
+        case 7:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->max_width))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_max_width = true;
+            break;
+        case 8:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->max_height))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_max_height = true;
+            break;
+        case 9:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->width_alignment))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_width_alignment = true;
+            break;
+        case 10:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->height_alignment))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_height_alignment = true;
+            break;
+        default: break;
+        }
+    }
+    if (!seen_revision) return WW_ERR_SHORT;
+    if (!seen_reference_width) return WW_ERR_SHORT;
+    if (!seen_reference_height) return WW_ERR_SHORT;
+    if (!seen_mode) return WW_ERR_SHORT;
+    if (!seen_min_width) return WW_ERR_SHORT;
+    if (!seen_min_height) return WW_ERR_SHORT;
+    if (!seen_max_width) return WW_ERR_SHORT;
+    if (!seen_max_height) return WW_ERR_SHORT;
+    if (!seen_width_alignment) return WW_ERR_SHORT;
+    if (!seen_height_alignment) return WW_ERR_SHORT;
+    return WW_OK;
+}
+
+static void free_render_target_capabilities(waywallen_render_target_capabilities_t *v) {
+    (void)v;
+}
+
+void waywallen_render_target_capabilities_free(waywallen_render_target_capabilities_t *value) {
+    if (!value) return;
+    free_render_target_capabilities(value);
+    memset(value, 0, sizeof(*value));
+}
+
+static int w_render_target_config(ww_buf_t *b, const waywallen_render_target_config_t *v) {
+    int rc;
+    if ((rc = w_u32(b, 1))) return rc;
+    size_t body_length_pos = b->len;
+    if ((rc = w_u32(b, 0))) return rc;
+    {
+        if ((rc = w_u32(b, 1))) return rc;
+        if ((rc = w_u32(b, 4))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u64(b, v->revision))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 2))) return rc;
+        if ((rc = w_u32(b, 4))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u64(b, v->capabilities_revision))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 3))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->width))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 4))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->height))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 5))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->fourcc))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 6))) return rc;
+        if ((rc = w_u32(b, 4))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u64(b, v->modifier))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 7))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->plane_count))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 8))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->sync_mode))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 9))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->color))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 10))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->mem_hint))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 11))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->count))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 12))) return rc;
+        if ((rc = w_u32(b, 12))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_buffer_path(b, v->path))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 13))) return rc;
+        if ((rc = w_u32(b, 12))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_buffer_memory_source(b, v->memory_source))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    if (b->len - body_length_pos - 4 > 65520) return WW_ERR_OVERFLOW;
+    tagged_patch_u32(b, body_length_pos, (uint32_t)(b->len - body_length_pos - 4));
+    return WW_OK;
+}
+
+static int rd_render_target_config(ww_rd_t *r, waywallen_render_target_config_t *v) {
+    int rc;
+    ww_tagged_reader_t fields;
+    if ((rc = tagged_begin(r, &fields))) return rc;
+    bool seen_revision = false;
+    bool seen_capabilities_revision = false;
+    bool seen_width = false;
+    bool seen_height = false;
+    bool seen_fourcc = false;
+    bool seen_modifier = false;
+    bool seen_plane_count = false;
+    bool seen_sync_mode = false;
+    bool seen_color = false;
+    bool seen_mem_hint = false;
+    bool seen_count = false;
+    bool seen_path = false;
+    bool seen_memory_source = false;
+    while (fields.body.pos != fields.body.len) {
+        uint32_t tag, kind;
+        ww_rd_t field;
+        if ((rc = tagged_next(&fields, &tag, &kind, &field))) return rc;
+        switch (tag) {
+        case 1:
+            if (kind != 4) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u64(&field, &v->revision))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_revision = true;
+            break;
+        case 2:
+            if (kind != 4) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u64(&field, &v->capabilities_revision))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_capabilities_revision = true;
+            break;
+        case 3:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->width))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_width = true;
+            break;
+        case 4:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->height))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_height = true;
+            break;
+        case 5:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->fourcc))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_fourcc = true;
+            break;
+        case 6:
+            if (kind != 4) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u64(&field, &v->modifier))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_modifier = true;
+            break;
+        case 7:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->plane_count))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_plane_count = true;
+            break;
+        case 8:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->sync_mode))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_sync_mode = true;
+            break;
+        case 9:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->color))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_color = true;
+            break;
+        case 10:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->mem_hint))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_mem_hint = true;
+            break;
+        case 11:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->count))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_count = true;
+            break;
+        case 12:
+            if (kind != 12) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_buffer_path(&field, &v->path))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_path = true;
+            break;
+        case 13:
+            if (kind != 12) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_buffer_memory_source(&field, &v->memory_source))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_memory_source = true;
+            break;
+        default: break;
+        }
+    }
+    if (!seen_revision) return WW_ERR_SHORT;
+    if (!seen_capabilities_revision) return WW_ERR_SHORT;
+    if (!seen_width) return WW_ERR_SHORT;
+    if (!seen_height) return WW_ERR_SHORT;
+    if (!seen_fourcc) return WW_ERR_SHORT;
+    if (!seen_modifier) return WW_ERR_SHORT;
+    if (!seen_plane_count) return WW_ERR_SHORT;
+    if (!seen_sync_mode) return WW_ERR_SHORT;
+    if (!seen_color) return WW_ERR_SHORT;
+    if (!seen_mem_hint) return WW_ERR_SHORT;
+    if (!seen_count) return WW_ERR_SHORT;
+    if (!seen_path) return WW_ERR_SHORT;
+    if (!seen_memory_source) return WW_ERR_SHORT;
+    return WW_OK;
+}
+
+static void free_render_target_config(waywallen_render_target_config_t *v) {
+    (void)v;
+}
+
+void waywallen_render_target_config_free(waywallen_render_target_config_t *value) {
+    if (!value) return;
+    free_render_target_config(value);
+    memset(value, 0, sizeof(*value));
+}
+
+static int w_render_target_outcome(ww_buf_t *b, const waywallen_render_target_outcome_t *v) {
+    int rc;
+    if ((rc = w_u32(b, 1))) return rc;
+    size_t body_length_pos = b->len;
+    if ((rc = w_u32(b, 0))) return rc;
+    {
+        if ((rc = w_u32(b, 1))) return rc;
+        if ((rc = w_u32(b, 4))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u64(b, v->revision))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 2))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->status))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 3))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->width))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 4))) return rc;
+        if ((rc = w_u32(b, 2))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u32(b, v->height))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 5))) return rc;
+        if ((rc = w_u32(b, 4))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_u64(b, v->pool_generation))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    {
+        if ((rc = w_u32(b, 6))) return rc;
+        if ((rc = w_u32(b, 8))) return rc;
+        size_t length_pos = b->len;
+        if ((rc = w_u32(b, 0))) return rc;
+        if ((rc = w_string(b, v->message))) return rc;
+        if (b->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(b, length_pos, (uint32_t)(b->len - length_pos - 4));
+    }
+    if (b->len - body_length_pos - 4 > 65520) return WW_ERR_OVERFLOW;
+    tagged_patch_u32(b, body_length_pos, (uint32_t)(b->len - body_length_pos - 4));
+    return WW_OK;
+}
+
+static int rd_render_target_outcome(ww_rd_t *r, waywallen_render_target_outcome_t *v) {
+    int rc;
+    ww_tagged_reader_t fields;
+    if ((rc = tagged_begin(r, &fields))) return rc;
+    bool seen_revision = false;
+    bool seen_status = false;
+    bool seen_width = false;
+    bool seen_height = false;
+    bool seen_pool_generation = false;
+    bool seen_message = false;
+    while (fields.body.pos != fields.body.len) {
+        uint32_t tag, kind;
+        ww_rd_t field;
+        if ((rc = tagged_next(&fields, &tag, &kind, &field))) return rc;
+        switch (tag) {
+        case 1:
+            if (kind != 4) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u64(&field, &v->revision))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_revision = true;
+            break;
+        case 2:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->status))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_status = true;
+            break;
+        case 3:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->width))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_width = true;
+            break;
+        case 4:
+            if (kind != 2) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u32(&field, &v->height))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_height = true;
+            break;
+        case 5:
+            if (kind != 4) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_u64(&field, &v->pool_generation))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_pool_generation = true;
+            break;
+        case 6:
+            if (kind != 8) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_string(&field, &v->message))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_message = true;
+            break;
+        default: break;
+        }
+    }
+    if (!seen_revision) return WW_ERR_SHORT;
+    if (!seen_status) return WW_ERR_SHORT;
+    if (!seen_width) return WW_ERR_SHORT;
+    if (!seen_height) return WW_ERR_SHORT;
+    if (!seen_pool_generation) return WW_ERR_SHORT;
+    if (!seen_message) return WW_ERR_SHORT;
+    return WW_OK;
+}
+
+static void free_render_target_outcome(waywallen_render_target_outcome_t *v) {
+    free(v->message); v->message = NULL;
+}
+
+void waywallen_render_target_outcome_free(waywallen_render_target_outcome_t *value) {
+    if (!value) return;
+    free_render_target_outcome(value);
+    memset(value, 0, sizeof(*value));
+}
+
 static int w_renderer_init(ww_buf_t *b, const waywallen_renderer_init_t *v) {
     int rc;
     if ((rc = w_u32(b, v->protocol_version))) return rc;
@@ -1687,6 +2412,77 @@ uint32_t ww_evt_in_set_log_level_expected_fds(const ww_evt_in_set_log_level_t *m
     return 0;
 }
 
+static int ww_evt_in_configure_render_target_read(ww_rd_t *reader, ww_evt_in_configure_render_target_t *value) {
+    int rc;
+    (void)value;
+    ww_tagged_reader_t fields;
+    if ((rc = tagged_begin(reader, &fields))) return rc;
+    bool seen_config = false;
+    while (fields.body.pos != fields.body.len) {
+        uint32_t tag, kind;
+        ww_rd_t field;
+        if ((rc = tagged_next(&fields, &tag, &kind, &field))) return rc;
+        switch (tag) {
+        case 1:
+            if (kind != 11) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_render_target_config(&field, &value->config))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_config = true;
+            break;
+        default: break;
+        }
+    }
+    if (!seen_config) return WW_ERR_SHORT;
+    return WW_OK;
+}
+
+int ww_evt_in_configure_render_target_encode(const ww_evt_in_configure_render_target_t *m, ww_buf_t *out) {
+    int rc;
+    (void)m;
+    if ((rc = w_u32(out, 1))) return rc;
+    size_t body_length_pos = out->len;
+    if ((rc = w_u32(out, 0))) return rc;
+    {
+        if ((rc = w_u32(out, 1))) return rc;
+        if ((rc = w_u32(out, 11))) return rc;
+        size_t length_pos = out->len;
+        if ((rc = w_u32(out, 0))) return rc;
+        if ((rc = w_render_target_config(out, &m->config))) return rc;
+        if (out->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(out, length_pos, (uint32_t)(out->len - length_pos - 4));
+    }
+    if (out->len - body_length_pos - 4 > 65520) return WW_ERR_OVERFLOW;
+    tagged_patch_u32(out, body_length_pos, (uint32_t)(out->len - body_length_pos - 4));
+    return WW_OK;
+}
+
+int ww_evt_in_configure_render_target_decode(const uint8_t *buf, size_t len, ww_evt_in_configure_render_target_t *out) {
+    memset(out, 0, sizeof(*out));
+    ww_rd_t r = { buf, 0, len };
+    int rc;
+    if ((rc = ww_evt_in_configure_render_target_read(&r, out))) goto fail;
+    if (r.pos != r.len) {
+        int rc2 = WW_ERR_TRAILING;
+        (void)rc2;
+        ww_evt_in_configure_render_target_free(out);
+        return WW_ERR_TRAILING;
+    }
+    return WW_OK;
+fail:
+    ww_evt_in_configure_render_target_free(out);
+    return rc;
+}
+
+void ww_evt_in_configure_render_target_free(ww_evt_in_configure_render_target_t *m) {
+    free_render_target_config(&m->config);
+}
+
+uint32_t ww_evt_in_configure_render_target_expected_fds(const ww_evt_in_configure_render_target_t *m) {
+    (void)m;
+    return 0;
+}
+
 int ww_evt_ready_encode(const ww_evt_ready_t *m, ww_buf_t *out) {
     int rc;
     (void)m;
@@ -2004,6 +2800,148 @@ void ww_evt_set_event_subscriptions_free(ww_evt_set_event_subscriptions_t *m) {
 }
 
 uint32_t ww_evt_set_event_subscriptions_expected_fds(const ww_evt_set_event_subscriptions_t *m) {
+    (void)m;
+    return 0;
+}
+
+static int ww_evt_render_target_capabilities_read(ww_rd_t *reader, ww_evt_render_target_capabilities_t *value) {
+    int rc;
+    (void)value;
+    ww_tagged_reader_t fields;
+    if ((rc = tagged_begin(reader, &fields))) return rc;
+    bool seen_capabilities = false;
+    while (fields.body.pos != fields.body.len) {
+        uint32_t tag, kind;
+        ww_rd_t field;
+        if ((rc = tagged_next(&fields, &tag, &kind, &field))) return rc;
+        switch (tag) {
+        case 1:
+            if (kind != 11) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_render_target_capabilities(&field, &value->capabilities))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_capabilities = true;
+            break;
+        default: break;
+        }
+    }
+    if (!seen_capabilities) return WW_ERR_SHORT;
+    return WW_OK;
+}
+
+int ww_evt_render_target_capabilities_encode(const ww_evt_render_target_capabilities_t *m, ww_buf_t *out) {
+    int rc;
+    (void)m;
+    if ((rc = w_u32(out, 1))) return rc;
+    size_t body_length_pos = out->len;
+    if ((rc = w_u32(out, 0))) return rc;
+    {
+        if ((rc = w_u32(out, 1))) return rc;
+        if ((rc = w_u32(out, 11))) return rc;
+        size_t length_pos = out->len;
+        if ((rc = w_u32(out, 0))) return rc;
+        if ((rc = w_render_target_capabilities(out, &m->capabilities))) return rc;
+        if (out->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(out, length_pos, (uint32_t)(out->len - length_pos - 4));
+    }
+    if (out->len - body_length_pos - 4 > 65520) return WW_ERR_OVERFLOW;
+    tagged_patch_u32(out, body_length_pos, (uint32_t)(out->len - body_length_pos - 4));
+    return WW_OK;
+}
+
+int ww_evt_render_target_capabilities_decode(const uint8_t *buf, size_t len, ww_evt_render_target_capabilities_t *out) {
+    memset(out, 0, sizeof(*out));
+    ww_rd_t r = { buf, 0, len };
+    int rc;
+    if ((rc = ww_evt_render_target_capabilities_read(&r, out))) goto fail;
+    if (r.pos != r.len) {
+        int rc2 = WW_ERR_TRAILING;
+        (void)rc2;
+        ww_evt_render_target_capabilities_free(out);
+        return WW_ERR_TRAILING;
+    }
+    return WW_OK;
+fail:
+    ww_evt_render_target_capabilities_free(out);
+    return rc;
+}
+
+void ww_evt_render_target_capabilities_free(ww_evt_render_target_capabilities_t *m) {
+    free_render_target_capabilities(&m->capabilities);
+}
+
+uint32_t ww_evt_render_target_capabilities_expected_fds(const ww_evt_render_target_capabilities_t *m) {
+    (void)m;
+    return 0;
+}
+
+static int ww_evt_render_target_result_read(ww_rd_t *reader, ww_evt_render_target_result_t *value) {
+    int rc;
+    (void)value;
+    ww_tagged_reader_t fields;
+    if ((rc = tagged_begin(reader, &fields))) return rc;
+    bool seen_result = false;
+    while (fields.body.pos != fields.body.len) {
+        uint32_t tag, kind;
+        ww_rd_t field;
+        if ((rc = tagged_next(&fields, &tag, &kind, &field))) return rc;
+        switch (tag) {
+        case 1:
+            if (kind != 11) return WW_ERR_BAD_ARRAY;
+            if ((rc = tagged_validate(kind, field))) return rc;
+            if ((rc = rd_render_target_outcome(&field, &value->result))) return rc;
+            if (field.pos != field.len) return WW_ERR_TRAILING;
+            seen_result = true;
+            break;
+        default: break;
+        }
+    }
+    if (!seen_result) return WW_ERR_SHORT;
+    return WW_OK;
+}
+
+int ww_evt_render_target_result_encode(const ww_evt_render_target_result_t *m, ww_buf_t *out) {
+    int rc;
+    (void)m;
+    if ((rc = w_u32(out, 1))) return rc;
+    size_t body_length_pos = out->len;
+    if ((rc = w_u32(out, 0))) return rc;
+    {
+        if ((rc = w_u32(out, 1))) return rc;
+        if ((rc = w_u32(out, 11))) return rc;
+        size_t length_pos = out->len;
+        if ((rc = w_u32(out, 0))) return rc;
+        if ((rc = w_render_target_outcome(out, &m->result))) return rc;
+        if (out->len - length_pos - 4 > UINT32_MAX) return WW_ERR_OVERFLOW;
+        tagged_patch_u32(out, length_pos, (uint32_t)(out->len - length_pos - 4));
+    }
+    if (out->len - body_length_pos - 4 > 65520) return WW_ERR_OVERFLOW;
+    tagged_patch_u32(out, body_length_pos, (uint32_t)(out->len - body_length_pos - 4));
+    return WW_OK;
+}
+
+int ww_evt_render_target_result_decode(const uint8_t *buf, size_t len, ww_evt_render_target_result_t *out) {
+    memset(out, 0, sizeof(*out));
+    ww_rd_t r = { buf, 0, len };
+    int rc;
+    if ((rc = ww_evt_render_target_result_read(&r, out))) goto fail;
+    if (r.pos != r.len) {
+        int rc2 = WW_ERR_TRAILING;
+        (void)rc2;
+        ww_evt_render_target_result_free(out);
+        return WW_ERR_TRAILING;
+    }
+    return WW_OK;
+fail:
+    ww_evt_render_target_result_free(out);
+    return rc;
+}
+
+void ww_evt_render_target_result_free(ww_evt_render_target_result_t *m) {
+    free_render_target_outcome(&m->result);
+}
+
+uint32_t ww_evt_render_target_result_expected_fds(const ww_evt_render_target_result_t *m) {
     (void)m;
     return 0;
 }

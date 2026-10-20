@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -200,7 +201,105 @@ static void test_republish_reuses_latest_slot_with_new_release_point(void) {
     destroy_pool_state(&pool);
 }
 
+static unsigned allocated_slots;
+static unsigned fail_slot;
+
+static int fork_allocation(const ww_pool_t* source, ww_pool_t* candidate) {
+    (void)source;
+    candidate->backend_data = calloc(WW_POOL_MAX_SLOTS, sizeof(bool));
+    return candidate->backend_data ? 0 : -ENOMEM;
+}
+
+static int alloc_slot(ww_pool_t* pool, uint32_t index, ww_pool_slot_layout_t* layout) {
+    if (index == fail_slot) return -ENOMEM;
+    bool* live  = pool->backend_data;
+    live[index] = true;
+    ++allocated_slots;
+    layout->plane_count = 1;
+    layout->fds[0]      = open("/dev/null", O_RDONLY);
+    assert(layout->fds[0] >= 0);
+    layout->strides[0] = pool->cur.extent.width * 4;
+    layout->sizes[0]   = (uint64_t)layout->strides[0] * pool->cur.extent.height;
+    return 0;
+}
+
+static void free_slot(ww_pool_t* pool, uint32_t index) {
+    bool* live = pool->backend_data;
+    if (live[index]) {
+        live[index] = false;
+        --allocated_slots;
+    }
+}
+
+static void free_backend(ww_pool_t* pool) { free(pool->backend_data); }
+
+static const struct ww_pool_backend_ops ALLOCATION_OPS = {
+    .fork_allocation    = fork_allocation,
+    .alloc_slot         = alloc_slot,
+    .free_slot          = free_slot,
+    .destroy            = free_backend,
+    .populate_slot_view = populate_slot_view,
+};
+
+static void test_render_target_candidate_rollback_and_commit(void) {
+    ww_pool_t pool;
+    init_pool(&pool, 0);
+    pool.ops               = &ALLOCATION_OPS;
+    pool.backend_data      = calloc(WW_POOL_MAX_SLOTS, sizeof(bool));
+    pool.caps_advertised   = true;
+    pool.caps.extent_max_w = pool.caps.extent_max_h = 4096;
+    pool.probe_width                                = 1920;
+    pool.probe_height                               = 1080;
+    pool.cur.extent                                 = (waywallen_extent_t) { 1920, 1080 };
+    pool.release_point                              = 27;
+    for (unsigned i = 0; i < WW_POOL_MAX_SLOTS; ++i)
+        for (unsigned j = 0; j < WW_POOL_MAX_PLANES; ++j) pool.slots[i].fds[j] = -1;
+    fail_slot = WW_POOL_MAX_SLOTS;
+    assert(alloc_slot(&pool, 0, &pool.slots[0]) == 0);
+    pool.n_slots                  = 1;
+    int                 old_fd    = pool.slots[0].fds[0];
+    ww_pool_directive_t directive = {
+        .count         = 3,
+        .sync_mode     = WW_SYNC_SYNCOBJ_TIMELINE,
+        .path          = WAYWALLEN_BUFFER_PATH_COMPAT_LINEAR,
+        .memory_source = WAYWALLEN_BUFFER_MEMORY_SOURCE_GPU_LINEAR,
+        .format        = { .fourcc = 1, .plane_count = 1 },
+    };
+    fail_slot = 1;
+    assert(ww_bridge_pool_prepare_target(&pool, &directive, 1280, 720) == -ENOMEM);
+    assert(! pool.candidate && allocated_slots == 1);
+    assert(pool.n_slots == 1 && pool.bind_generation == 7);
+    assert(pool.cur.extent.width == 1920 && fcntl(old_fd, F_GETFD) >= 0);
+    fail_slot = WW_POOL_MAX_SLOTS;
+    assert(ww_bridge_pool_prepare_target(&pool, &directive, 1280, 720) == 0);
+    assert(ww_bridge_pool_prepare_target(&pool, &directive, 640, 360) == -EBUSY);
+    assert(allocated_slots == 4);
+    ww_pool_slot_t slot;
+    assert(ww_bridge_pool_candidate_slot(&pool, 0, &slot) == 0);
+    assert(slot.width == 1280 && slot.height == 720);
+    ww_bridge_pool_abort_target(&pool);
+    assert(allocated_slots == 1 && pool.cur.extent.width == 1920);
+    assert(ww_bridge_pool_prepare_target(&pool, &directive, 1280, 720) == 0);
+    int sockets[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    uint64_t generation;
+    assert(ww_bridge_pool_commit_target(&pool, sockets[0], &generation) == 0);
+    assert(generation == 8 && pool.release_point == 27);
+    assert(! pool.candidate && allocated_slots == 3 && pool.cur.extent.width == 1280);
+    assert(fcntl(old_fd, F_GETFD) == -1);
+    for (unsigned i = 0; i < pool.n_slots; ++i) {
+        free_slot(&pool, i);
+        close(pool.slots[i].fds[0]);
+    }
+    free_backend(&pool);
+    close(sockets[0]);
+    close(sockets[1]);
+    destroy_pool_state(&pool);
+    assert(allocated_slots == 0);
+}
+
 int main(void) {
+    test_render_target_candidate_rollback_and_commit();
     test_abort_requires_exact_identity();
     test_send_failure_does_not_commit_release_point();
     test_acquire_any_scans_fresh_slots();

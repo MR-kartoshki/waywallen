@@ -832,6 +832,20 @@ impl Router {
 
     pub(super) async fn on_deadline_reached(self: &Arc<Self>, event: deadline::DeadlineReached) {
         match event.key {
+            deadline::DeadlineKey::RenderTarget(renderer_id, generation) => {
+                let current = self
+                    .inner
+                    .lock()
+                    .await
+                    .table
+                    .get_renderer(&renderer_id)
+                    .is_some_and(|handle| {
+                        handle.process_generation == generation && generation == event.token
+                    });
+                if current {
+                    self.reconcile_render_targets().await;
+                }
+            }
             deadline::DeadlineKey::RendererStart(renderer_id) => {
                 let _ = self.advance_renderer_start(&renderer_id, event.token).await;
             }
@@ -845,12 +859,7 @@ impl Router {
     pub async fn set_manual_pause(self: &Arc<Self>, paused: bool) {
         let changed = {
             let mut inner = self.inner.lock().await;
-            if inner.manual_paused == paused {
-                false
-            } else {
-                inner.manual_paused = paused;
-                true
-            }
+            inner.set_global_pause(paused)
         };
         if changed {
             self.reconcile_lifecycle().await;
@@ -860,8 +869,9 @@ impl Router {
     pub async fn toggle_manual_pause(self: &Arc<Self>) -> bool {
         let paused = {
             let mut inner = self.inner.lock().await;
-            inner.manual_paused = !inner.manual_paused;
-            inner.manual_paused
+            let paused = !inner.manual_paused;
+            inner.set_global_pause(paused);
+            paused
         };
         self.reconcile_lifecycle().await;
         paused

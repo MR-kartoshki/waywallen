@@ -105,6 +105,7 @@ export class RemoteDetailsQuery : public Query,
     Q_PROPERTY(QString sourceId READ sourceId WRITE setSourceId NOTIFY sourceIdChanged FINAL)
     Q_PROPERTY(QString itemId READ itemId WRITE setItemId NOTIFY itemIdChanged FINAL)
     Q_PROPERTY(QString author READ author NOTIFY loaded FINAL)
+    Q_PROPERTY(QString authorAvatarUrl READ authorAvatarUrl NOTIFY loaded FINAL)
     Q_PROPERTY(QString description READ description NOTIFY loaded FINAL)
     Q_PROPERTY(QString size READ size NOTIFY loaded FINAL)
     Q_PROPERTY(int width READ width NOTIFY loaded FINAL)
@@ -121,6 +122,7 @@ public:
     auto itemId() const -> const QString&;
     void setItemId(const QString&);
     auto author() const -> const QString&;
+    auto authorAvatarUrl() const -> const QString&;
     auto description() const -> const QString&;
     auto size() const -> const QString&;
     auto width() const -> int;
@@ -138,6 +140,7 @@ private:
     QString     m_source_id;
     QString     m_item_id;
     QString     m_author;
+    QString     m_author_avatar_url;
     QString     m_description;
     QString     m_size;
     int         m_width { 0 };

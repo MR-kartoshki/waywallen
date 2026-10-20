@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn library_visibility_settings_default_and_roundtrip() {
+    let mut settings: Settings = toml::from_str("").unwrap();
+    assert!(settings.global.wallpaper_hidden_library_ids.is_empty());
+    settings.global.wallpaper_hidden_library_ids = vec![2, 7];
+    let saved = toml::to_string(&settings).unwrap();
+    let restored: Settings = toml::from_str(&saved).unwrap();
+    assert_eq!(restored.global.wallpaper_hidden_library_ids, vec![2, 7]);
+    let legacy: Settings = toml::from_str("[global]\nwallpaper_library_ids = [2, 7]\n").unwrap();
+    assert!(legacy.global.wallpaper_hidden_library_ids.is_empty());
+}
+
+#[test]
 fn flip_defaults_inheritance_and_roundtrip() {
     let mut settings: Settings = toml::from_str("").unwrap();
     settings

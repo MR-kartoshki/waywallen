@@ -7,6 +7,8 @@ mod m20260614_000001_wallpaper_layout_override;
 mod m20260816_000001_item_web_url;
 mod m20260825_000001_playlist_synchronized_selection;
 mod m20260929_000001_item_hidden;
+mod m20261015_000001_smart_playlists;
+mod m20261015_000002_library_name;
 mod m20261019_000001_item_update_available;
 
 pub struct Migrator;
@@ -22,6 +24,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260816_000001_item_web_url::Migration),
             Box::new(m20260825_000001_playlist_synchronized_selection::Migration),
             Box::new(m20260929_000001_item_hidden::Migration),
+            Box::new(m20261015_000001_smart_playlists::Migration),
+            Box::new(m20261015_000002_library_name::Migration),
             Box::new(m20261019_000001_item_update_available::Migration),
         ]
     }
@@ -31,6 +35,36 @@ impl MigratorTrait for Migrator {
 mod tests {
     use super::*;
     use sea_orm::{ConnectionTrait, Statement};
+
+    #[tokio::test]
+    async fn library_names_migrate_existing_rows() {
+        let db = crate::model::connect_url("sqlite::memory:").await.unwrap();
+        Migrator::down(&db, Some(2)).await.unwrap();
+        db.execute_unprepared("INSERT INTO source_plugin (id, name) VALUES (1, 'image')")
+            .await
+            .unwrap();
+        db.execute_unprepared("INSERT INTO library (id, plugin_id, path, metadata) VALUES (1, 1, '/a/Wallpapers/', '{\"keep\":\"value\"}'), (2, 1, '/b/Wallpapers', '{}'), (3, 1, '/c/Wallpapers', '{}')").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        let libraries = crate::model::repo::list_libraries(&db).await.unwrap();
+        assert_eq!(
+            libraries
+                .iter()
+                .map(|lib| lib.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Wallpapers", "Wallpapers-1", "Wallpapers-2"]
+        );
+        assert_eq!(libraries[0].id, 1);
+        assert_eq!(libraries[0].path, "/a/Wallpapers/");
+        assert_eq!(libraries[0].metadata, "{\"keep\":\"value\"}");
+        crate::model::repo::rename_library(&db, 2, "My wallpapers")
+            .await
+            .unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        assert_eq!(
+            crate::model::repo::list_libraries(&db).await.unwrap()[1].name,
+            "My wallpapers"
+        );
+    }
 
     #[tokio::test]
     async fn playlist_tables_exist_after_migration() {

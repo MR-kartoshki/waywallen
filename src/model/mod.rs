@@ -9,7 +9,9 @@ use sea_orm_migration::MigratorTrait;
 pub mod entities;
 pub mod filter;
 pub mod fts;
+mod library_name;
 pub mod migration;
+pub mod playlist_source;
 pub mod repo;
 pub mod sync;
 

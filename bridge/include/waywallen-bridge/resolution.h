@@ -17,6 +17,7 @@ extern "C" {
 
 typedef enum ww_resolution
 {
+    WW_RESOLUTION_AUTO   = -2, /* daemon-coordinated render target */
     WW_RESOLUTION_CUSTOM = -1, /* renderer-specific custom short-edge extent */
     WW_RESOLUTION_ORIGIN = 0,  /* no cap — use renderer's native size */
     WW_RESOLUTION_720P   = 1,
@@ -89,11 +90,11 @@ static inline void ww_resolution_apply_cap(int32_t resolution, uint32_t option, 
 }
 
 /* Coerce a raw wire value into a usable resolution. Anything outside
- * `{CUSTOM, ORIGIN .. 2160P}` falls back to `WW_RESOLUTION_1080P`.
- * CUSTOM and ORIGIN stay unchanged — callers that disallow them must
+ * `{AUTO, CUSTOM, ORIGIN .. 2160P}` falls back to `WW_RESOLUTION_1080P`.
+ * AUTO, CUSTOM and ORIGIN stay unchanged — callers that disallow them must
  * filter them themselves. */
 static inline int32_t ww_resolution_sanitize(int32_t raw) {
-    if (raw == (int32_t)WW_RESOLUTION_CUSTOM) return raw;
+    if (raw == (int32_t)WW_RESOLUTION_AUTO || raw == (int32_t)WW_RESOLUTION_CUSTOM) return raw;
     if (raw < (int32_t)WW_RESOLUTION_ORIGIN || raw > (int32_t)WW_RESOLUTION_2160P)
         return (int32_t)WW_RESOLUTION_1080P;
     return raw;

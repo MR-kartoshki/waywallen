@@ -231,11 +231,8 @@ static int emit_bind_buffers(ww_pool_t* p, int sock) {
 static int validate_directive(const ww_pool_t* p, const ww_pool_directive_t* d) {
     if (! d) return -EINVAL;
     if (d->count == 0 || d->count > WW_POOL_MAX_SLOTS) return -EINVAL;
-    /* `d->width`/`d->height` are no longer caller-controlled — the
-     * pool sizes slots from `probe_width/probe_height` (the renderer's
-     * actual render extent). Validation here would just second-guess
-     * the renderer; reject only if the pool itself never advertised
-     * dims (caller forgot to call `advertise_caps`). */
+    /* Legacy directives use the advertised extent. Target transactions
+     * validate their explicit extent before allocation. */
     if (p->probe_width == 0 || p->probe_height == 0) return -EINVAL;
 
     switch (d->path) {
@@ -348,6 +345,7 @@ int ww_bridge_pool_create(ww_pool_backend_t backend, const void* init_data, ww_p
 
 void ww_bridge_pool_destroy(ww_pool_t* pool) {
     if (! pool) return;
+    ww_bridge_pool_abort_target(pool);
     pthread_mutex_lock(&pool->release_mutex);
     pool->session_lost = true;
     pthread_mutex_unlock(&pool->release_mutex);
@@ -454,6 +452,7 @@ int ww_bridge_pool_apply_directive(ww_pool_t* pool, int sock,
                                    const ww_pool_directive_t* directive) {
     if (! pool || ! directive) return -EINVAL;
     if (! pool->caps_advertised) return -EINVAL;
+    if (pool->candidate) return -EBUSY;
 
     pthread_mutex_lock(&pool->release_mutex);
     bool transaction_active = pool->pending_acquire.active || pool->pending_submit.active;
@@ -473,15 +472,7 @@ int ww_bridge_pool_apply_directive(ww_pool_t* pool, int sock,
     /* Tear down existing slots before re-allocating. */
     teardown_slots(pool);
     pool->cur.directive = *directive;
-    /* The renderer is the authority on render-target extent — it
-     * already resolved the daemon's policy hint against its content's
-     * intrinsic size when it called `advertise_caps`, and its render
-     * loop is producing frames at exactly `probe_width × probe_height`.
-     * The daemon's `negotiate_buffers` only carries (fourcc, modifier,
-     * sync, color, mem_hint) decisions; its `extent_w/h` field is
-     * just an echo of what it sent in `Init` and isn't authoritative
-     * here. Override with the renderer's choice so dmabuf slots
-     * match the frames being put into them. */
+    /* Legacy negotiation uses the renderer's already-resolved extent. */
     pool->cur.extent = (waywallen_extent_t) {
         .width  = pool->probe_width,
         .height = pool->probe_height,
@@ -547,6 +538,111 @@ static int populate_slot_view(ww_pool_t* pool, uint32_t slot_index, ww_pool_slot
     out_slot->size         = (uint32_t)pool->slots[slot_index].sizes[0];
     /* Backend fills its handle fields. */
     return pool->ops->populate_slot_view(pool, slot_index, out_slot);
+}
+
+void ww_bridge_pool_abort_target(ww_pool_t* pool) {
+    if (! pool || ! pool->candidate) return;
+    ww_pool_t* candidate = pool->candidate;
+    if (candidate->ops->wait_idle) candidate->ops->wait_idle(candidate);
+    teardown_slots(candidate);
+    candidate->ops->destroy(candidate);
+    destroy_release_sync(candidate);
+    free(candidate);
+    pool->candidate = NULL;
+}
+
+int ww_bridge_pool_prepare_target(ww_pool_t* pool, const ww_pool_directive_t* directive,
+                                  uint32_t width, uint32_t height) {
+    if (! pool || ! directive || ! pool->caps_advertised || ! width || ! height) return -EINVAL;
+    if (! pool->ops->fork_allocation) return -ENOTSUP;
+    if (pool->candidate) return -EBUSY;
+    if (width > pool->caps.extent_max_w || height > pool->caps.extent_max_h) return -ERANGE;
+    pthread_mutex_lock(&pool->release_mutex);
+    bool busy = pool->pending_acquire.active || pool->pending_submit.active;
+    bool lost = pool->session_lost;
+    pthread_mutex_unlock(&pool->release_mutex);
+    if (lost) return -EPIPE;
+    if (busy) return -EBUSY;
+    int rc = validate_directive(pool, directive);
+    if (rc != 0) return rc;
+
+    ww_pool_t* candidate = calloc(1, sizeof(*candidate));
+    if (! candidate) return -ENOMEM;
+    candidate->ops                    = pool->ops;
+    candidate->backend                = pool->backend;
+    candidate->drm_fd                 = -1;
+    candidate->latest_acquire_sync_fd = -1;
+    candidate->cur                    = (ww_pool_allocation_t) { *directive, { width, height } };
+    candidate->has_directive          = true;
+    init_slot_fds_unset(candidate);
+    rc = init_release_sync(candidate);
+    if (rc != 0) {
+        free(candidate);
+        return rc;
+    }
+    rc = pool->ops->fork_allocation(pool, candidate);
+    if (rc != 0) {
+        destroy_release_sync(candidate);
+        free(candidate);
+        return rc;
+    }
+    pool->candidate = candidate;
+    for (uint32_t i = 0; i < directive->count; ++i) {
+        candidate->n_slots = i + 1;
+        rc                 = candidate->ops->alloc_slot(candidate, i, &candidate->slots[i]);
+        if (rc != 0) {
+            ww_bridge_pool_abort_target(pool);
+            return rc;
+        }
+    }
+    return 0;
+}
+
+int ww_bridge_pool_candidate_slot(ww_pool_t* pool, uint32_t index, ww_pool_slot_t* out_slot) {
+    if (! pool || ! pool->candidate || ! out_slot) return -EINVAL;
+    if (index >= pool->candidate->n_slots) return -ERANGE;
+    return populate_slot_view(pool->candidate, index, out_slot);
+}
+
+int ww_bridge_pool_commit_target(ww_pool_t* pool, int sock, uint64_t* out_generation) {
+    if (! pool || ! pool->candidate || ! out_generation) return -EINVAL;
+    pthread_mutex_lock(&pool->release_mutex);
+    bool busy = pool->pending_acquire.active || pool->pending_submit.active;
+    bool lost = pool->session_lost;
+    pthread_mutex_unlock(&pool->release_mutex);
+    if (lost) return -EPIPE;
+    if (busy) return -EBUSY;
+    if (pool->ops->wait_idle) pool->ops->wait_idle(pool);
+    ww_pool_t* candidate         = pool->candidate;
+    void*      old_backend       = pool->backend_data;
+    pool->backend_data           = candidate->backend_data;
+    candidate->backend_data      = old_backend;
+    ww_pool_allocation_t old_cur = pool->cur;
+    pool->cur                    = candidate->cur;
+    candidate->cur               = old_cur;
+    uint32_t old_count           = pool->n_slots;
+    pool->n_slots                = candidate->n_slots;
+    candidate->n_slots           = old_count;
+    for (uint32_t i = 0; i < WW_POOL_MAX_SLOTS; ++i) {
+        ww_pool_slot_layout_t old_slot = pool->slots[i];
+        pool->slots[i]                 = candidate->slots[i];
+        candidate->slots[i]            = old_slot;
+    }
+    pool->has_directive = true;
+    pthread_mutex_lock(&pool->release_mutex);
+    reset_release_state_locked(pool);
+    pthread_mutex_unlock(&pool->release_mutex);
+    int rc = emit_bind_buffers(pool, sock);
+    if (rc != 0) {
+        pthread_mutex_lock(&pool->release_mutex);
+        pool->session_lost = true;
+        pthread_mutex_unlock(&pool->release_mutex);
+    }
+    *out_generation = pool->bind_generation;
+    /* Consumers and PublishedPool retain their own DMA-BUF references. Retiring
+     * producer handles does not reuse or overwrite that backing storage. */
+    ww_bridge_pool_abort_target(pool);
+    return rc;
 }
 
 static bool wait_would_block(int rc) { return rc == -ETIME || rc == -ETIMEDOUT || rc == -EAGAIN; }

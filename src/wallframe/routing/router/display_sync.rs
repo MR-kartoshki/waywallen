@@ -97,7 +97,18 @@ impl Router {
                 .checked_add(1)
                 .expect("display buffer generation exhausted");
             let wire_generation = s.next_wire_buffer_generation;
-            let cfg = project_link(&link, &pool, &info, cfg_gen, wire_generation, &layout);
+            let reference = renderer
+                .render_target_capabilities()
+                .map(|caps| caps.reference);
+            let cfg = project_link(
+                &link,
+                &pool,
+                &info,
+                cfg_gen,
+                wire_generation,
+                &layout,
+                reference,
+            );
             let _ = s.tx.send(DisplayOutEvent::Bind {
                 renderer: renderer.clone(),
                 pool: Arc::clone(&pool),
@@ -117,12 +128,14 @@ impl Router {
                 })
                 .is_ok()
             });
+            let last_frame_seq = replay.filter(|_| replayed).map(|frame| frame.seq);
             s.binding = Some(DisplayBinding {
                 renderer,
                 pool,
                 wire_generation,
                 content_token,
                 awaiting_initial_frame: !replayed,
+                last_frame_seq,
             });
             s.failed_binding_generation = None;
         } else {

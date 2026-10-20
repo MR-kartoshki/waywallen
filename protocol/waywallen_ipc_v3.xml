@@ -260,6 +260,50 @@
     <field name="runtime_tags" type="kv_list"/>
   </struct>
 
+  <!-- Auto sizing is opt-in; existing positional bodies remain unchanged. -->
+  <struct name="render_target_capabilities" encoding="tagged">
+    <field name="revision" type="u64" tag="1"/>
+    <field name="reference_width" type="u32" tag="2"/>
+    <field name="reference_height" type="u32" tag="3"/>
+    <!-- 1: native fixed aspect, downscale only. 2: scalable fixed aspect,
+         no native extent, bounded by 7680x4320 (orientation independent).
+         Both modes support runtime reconfiguration. -->
+    <field name="mode" type="u32" tag="4"/>
+    <field name="min_width" type="u32" tag="5"/>
+    <field name="min_height" type="u32" tag="6"/>
+    <field name="max_width" type="u32" tag="7"/>
+    <field name="max_height" type="u32" tag="8"/>
+    <field name="width_alignment" type="u32" tag="9"/>
+    <field name="height_alignment" type="u32" tag="10"/>
+  </struct>
+
+  <struct name="render_target_config" encoding="tagged">
+    <field name="revision" type="u64" tag="1"/>
+    <field name="capabilities_revision" type="u64" tag="2"/>
+    <field name="width" type="u32" tag="3"/>
+    <field name="height" type="u32" tag="4"/>
+    <field name="fourcc" type="u32" tag="5"/>
+    <field name="modifier" type="u64" tag="6"/>
+    <field name="plane_count" type="u32" tag="7"/>
+    <field name="sync_mode" type="u32" tag="8"/>
+    <field name="color" type="u32" tag="9"/>
+    <field name="mem_hint" type="u32" tag="10"/>
+    <field name="count" type="u32" tag="11"/>
+    <field name="path" type="buffer_path" tag="12"/>
+    <field name="memory_source" type="buffer_memory_source" tag="13"/>
+  </struct>
+
+  <struct name="render_target_outcome" encoding="tagged">
+    <field name="revision" type="u64" tag="1"/>
+    <!-- 0: applied, 1: invalid request, 2: resource/content failure,
+         3: allocation scheme rejected; another scheme may be tried. -->
+    <field name="status" type="u32" tag="2"/>
+    <field name="width" type="u32" tag="3"/>
+    <field name="height" type="u32" tag="4"/>
+    <field name="pool_generation" type="u64" tag="5"/>
+    <field name="message" type="string" tag="6"/>
+  </struct>
+
   <!-- daemon -> renderer -->
 
   <event_in name="init" opcode="1">
@@ -324,6 +368,10 @@
     <arg name="level" type="log_level"/>
   </event_in>
 
+  <event_in name="configure_render_target" opcode="17" encoding="tagged">
+    <arg name="config" type="render_target_config" tag="1"/>
+  </event_in>
+
   <!-- renderer -> daemon -->
 
   <event name="ready" opcode="1">
@@ -366,6 +414,14 @@
 
   <event name="set_event_subscriptions" opcode="10">
     <arg name="subscription" type="event_subscription"/>
+  </event>
+
+  <event name="render_target_capabilities" opcode="11" encoding="tagged">
+    <arg name="capabilities" type="render_target_capabilities" tag="1"/>
+  </event>
+
+  <event name="render_target_result" opcode="12" encoding="tagged">
+    <arg name="result" type="render_target_outcome" tag="1"/>
   </event>
 
 </protocol>

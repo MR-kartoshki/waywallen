@@ -11,7 +11,7 @@ MD.ActionToolBar {
     Layout.maximumWidth: Layout.preferredWidth
     Layout.alignment: Qt.AlignVCenter
 
-    component DetailActionButton: MD.IconButton {
+    component DetailActionButton: MD.ActionIconButton {
         id: button
         mdState.size: MD.Enum.XS
 
@@ -19,7 +19,7 @@ MD.ActionToolBar {
 
         hoverEnabled: true
         MD.ToolTip.text: button.toolTipText
-        MD.ToolTip.visible: button.hovered && button.toolTipText.length > 0 && !button.pressed
+        MD.ToolTip.visible: button.mdState.interactions.hovered && button.toolTipText.length > 0 && !button.mdState.interactions.pressed
     }
 
     iconDelegate: DetailActionButton {

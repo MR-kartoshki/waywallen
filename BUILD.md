@@ -100,6 +100,9 @@ export LD_LIBRARY_PATH="$PWD/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 ## Packaging
 
+The “On battery” auto replay rule reads UPower on the system bus. Flatpak packages
+need `--system-talk-name=org.freedesktop.UPower` to enable it.
+
 Build release artifacts and stage them into the package root with Lito:
 
 ```bash

@@ -26,6 +26,7 @@ public:
 
 private:
     QVariantList m_playlists;
+    quint64      m_generation { 0 };
 };
 
 export class PlaylistDetailQuery
@@ -60,6 +61,7 @@ private:
     QVariantMap m_playlist;
     qint64      m_revision { 0 };
     QStringList m_entry_ids;
+    quint64     m_generation { 0 };
 };
 
 export class PlaylistMutationQuery
@@ -75,6 +77,9 @@ public:
     Q_INVOKABLE void create(const QString& name, int mode, int intervalSecs,
                             bool synchronizedSelection, const QVariantList& itemIds);
     Q_INVOKABLE void remove(qint64 id);
+    Q_INVOKABLE void saveSmart(qint64 id, const QString& name, int mode, int intervalSecs,
+                               bool synchronizedSelection, const QVariant& selection,
+                               qint64 expectedRevision);
     Q_INVOKABLE void update(qint64 id, const QString& name, int mode, int intervalSecs,
                             bool synchronizedSelection, const QVariantList& itemIds,
                             qint64 expectedRevision);

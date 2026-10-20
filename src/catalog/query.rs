@@ -1,6 +1,7 @@
 use super::WallpaperEntry;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StringMatch {
     Is,
     IsNot,
@@ -20,7 +21,7 @@ impl StringMatch {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IntMatch {
     Equal,
     NotEqual,
@@ -44,7 +45,7 @@ impl IntMatch {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterPredicate {
     Name {
         value: String,
@@ -55,8 +56,8 @@ pub enum FilterPredicate {
         condition: StringMatch,
     },
     Library {
-        value: String,
-        condition: StringMatch,
+        value: i64,
+        exclude: bool,
     },
     Width {
         value: i64,
@@ -80,13 +81,13 @@ pub enum FilterPredicate {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterRule {
     pub group: i32,
     pub predicate: FilterPredicate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LogicOperator {
     And,
     Or,
@@ -101,14 +102,14 @@ impl LogicOperator {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterLogic {
     pub operator: LogicOperator,
     pub group_a: i32,
     pub group_b: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortKey {
     Name,
     WallpaperType,
@@ -116,13 +117,13 @@ pub enum SortKey {
     LastModified,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortDirection {
     Ascending,
     Descending,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SortRule {
     pub key: SortKey,
     pub direction: SortDirection,
@@ -134,6 +135,54 @@ pub struct CatalogQuery {
     pub logics: Vec<FilterLogic>,
     pub sorts: Vec<SortRule>,
     pub search_text: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HiddenFilter {
+    #[default]
+    Exclude,
+    Include,
+    Only,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WallpaperSelection {
+    pub filters: Vec<FilterRule>,
+    pub logics: Vec<FilterLogic>,
+    pub sorts: Vec<SortRule>,
+    pub search_text: String,
+    pub wp_type: String,
+    pub skip_types: Vec<String>,
+    pub filter_tags: Vec<String>,
+    pub skip_content_ratings: Vec<String>,
+    pub hidden: HiddenFilter,
+    pub hidden_library_ids: Vec<i64>,
+}
+
+impl WallpaperSelection {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        use crate::error::Error;
+        if self.hidden_library_ids.iter().any(|id| *id <= 0)
+            || self.filters.iter().any(|rule| matches!(rule.predicate, FilterPredicate::Library { value, .. } if value <= 0))
+        {
+            return Err(Error::InvalidArgument(
+                "library IDs must be positive".into(),
+            ));
+        }
+        let groups: std::collections::HashSet<_> = self.filters.iter().map(|f| f.group).collect();
+        if groups.iter().any(|g| *g < 0)
+            || self
+                .logics
+                .iter()
+                .any(|logic| !groups.contains(&logic.group_a) || !groups.contains(&logic.group_b))
+        {
+            return Err(Error::InvalidArgument(
+                "invalid filter group reference".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub fn sort_entries(entries: &mut [&WallpaperEntry], sorts: &[SortRule]) {

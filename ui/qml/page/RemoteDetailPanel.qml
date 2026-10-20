@@ -17,6 +17,10 @@ Item {
         const own = String(root.item?.author ?? "");
         return own.length > 0 ? own : String(root.details?.author ?? "");
     }
+    readonly property string authorAvatarUrl: {
+        const own = String(root.item?.authorAvatarUrl ?? "");
+        return own.length > 0 ? own : String(root.details?.authorAvatarUrl ?? "");
+    }
     property int remoteCapability: 0
     property string remoteHint: ""
     property var tagOptions: []
@@ -143,13 +147,30 @@ Item {
                     }
                 }
 
-                MD.Text {
+                RowLayout {
                     Layout.fillWidth: true
+                    spacing: 8
                     visible: root.authorName.length > 0
-                    text: qsTr("by %1").arg(root.authorName)
-                    typescale: MD.Token.typescale.body_medium
-                    color: MD.Token.color.on_surface_variant
-                    wrapMode: Text.WordWrap
+
+                    W.ThumbnailImage {
+                        Layout.preferredWidth: 32
+                        Layout.preferredHeight: 32
+                        Layout.maximumWidth: 32
+                        Layout.maximumHeight: 32
+                        visible: root.authorAvatarUrl.length > 0
+                        source: root.authorAvatarUrl
+                        maxSize: Qt.size(64, 64)
+                        fillMode: Image.PreserveAspectCrop
+                        radius: 16
+                    }
+
+                    MD.Text {
+                        Layout.fillWidth: true
+                        text: qsTr("by %1").arg(root.authorName)
+                        typescale: MD.Token.typescale.body_medium
+                        color: MD.Token.color.on_surface_variant
+                        wrapMode: Text.WordWrap
+                    }
                 }
 
                 GridLayout {

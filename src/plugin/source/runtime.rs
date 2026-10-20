@@ -2486,6 +2486,7 @@ impl LuaPluginRuntime {
                 title: Self::require_string(&row, "title", &context)?,
                 preview_url: Self::require_string(&row, "preview_url", &context)?,
                 author: Self::require_string(&row, "author", &context)?,
+                author_avatar_url: Self::optional_string(&row, "author_avatar_url", &context)?,
                 wp_type: {
                     let value = Self::optional_string(&row, "wp_type", &context)?;
                     if value.is_empty() {
@@ -2595,6 +2596,11 @@ impl LuaPluginRuntime {
 
         let details = DiscoverDetails {
             author: Self::optional_string(&result, "author", "module.discover.details result")?,
+            author_avatar_url: Self::optional_string(
+                &result,
+                "author_avatar_url",
+                "module.discover.details result",
+            )?,
             description: Self::require_string(
                 &result,
                 "description",

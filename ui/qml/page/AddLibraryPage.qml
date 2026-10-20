@@ -36,7 +36,7 @@ MD.Page {
     W.LibraryAddQuery {
         id: addQuery
         forwardError: false
-        onErrorOccurred: function(error) {
+        onErrorOccurred: function (error) {
             root.pathError = error;
         }
         // Toast now fires globally from Window.qml on the daemon's
@@ -54,7 +54,8 @@ MD.Page {
     readonly property var selectedSource: {
         const list = sourceQuery.sources || [];
         for (let i = 0; i < list.length; ++i) {
-            if (list[i].name === pluginGroup.selectedPlugin) return list[i];
+            if (list[i].name === pluginGroup.selectedPlugin)
+                return list[i];
         }
         return null;
     }
@@ -116,10 +117,7 @@ MD.Page {
                     error: root.pathError.length > 0
                     errorText: root.pathError
                     onTextChanged: root.pathError = ""
-                    placeholderText: root.selectedSource
-                                     ? (W.I18n.tr(root.selectedSource.libraryLabelText)
-                                        || qsTr("Library Path"))
-                                     : qsTr("Library Path")
+                    placeholderText: root.selectedSource ? (W.I18n.tr(root.selectedSource.libraryLabelText) || qsTr("Library Path")) : qsTr("Library Path")
                 }
 
                 MD.IconButton {
@@ -139,6 +137,15 @@ MD.Page {
                 color: MD.Token.color.on_surface_variant
             }
 
+            MD.TextField {
+                id: nameInput
+                Layout.fillWidth: true
+                mdState.size: MD.Enum.S
+                enabled: !addQuery.querying
+                placeholderText: qsTr("Library name (optional)")
+                supportingText: qsTr("Leave empty to use the folder name.")
+            }
+
             Item {
                 Layout.fillHeight: true
             }
@@ -153,6 +160,7 @@ MD.Page {
                     root.pathError = "";
                     addQuery.pluginName = pluginGroup.selectedPlugin;
                     addQuery.path = pathInput.text;
+                    addQuery.name = nameInput.text;
                     addQuery.reload();
                 }
             }

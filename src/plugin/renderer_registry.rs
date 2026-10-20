@@ -216,12 +216,25 @@ pub struct RendererDef {
     pub extras: Vec<String>,
     /// Optional schema for plugin-level settings.
     /// Each entry declares a type and validation envelope.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_settings")]
     pub settings: HashMap<String, SettingDef>,
     /// Retained only so manifests using the removed static subscription
     /// field can be rejected instead of silently changing behaviour.
     #[serde(default, rename = "events")]
     pub legacy_events: Option<Vec<String>>,
+}
+
+fn deserialize_settings<'de, D>(deserializer: D) -> Result<HashMap<String, SettingDef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let settings = HashMap::<String, SettingDef>::deserialize(deserializer)?;
+    for (key, setting) in &settings {
+        setting
+            .validate_constraints(key)
+            .map_err(serde::de::Error::custom)?;
+    }
+    Ok(settings)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -257,8 +270,8 @@ pub struct SettingDef {
     /// The daemon validates range, not step alignment.
     #[serde(default)]
     pub step: Option<toml::Value>,
-    /// Allowed string values.
-    /// Only valid for `String`; `SettingsSet` rejects other values.
+    /// Allowed canonical setting values, represented as strings.
+    /// Mutually exclusive with min, max and step.
     #[serde(default)]
     pub choices: Option<Vec<String>>,
     /// Logical group key. UI groups settings sharing this name into
@@ -270,7 +283,49 @@ pub struct SettingDef {
     pub order: Option<i32>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResolutionPolicy {
+    #[default]
+    Renderer,
+    Auto,
+}
+
+impl RendererDef {
+    pub fn resolution_policy(
+        &self,
+        values: &HashMap<String, String>,
+    ) -> Result<ResolutionPolicy, ValidationError> {
+        let Some(schema) = self.settings.get("resolution") else {
+            return Ok(ResolutionPolicy::Renderer);
+        };
+        if !matches!(schema.ty, SettingType::I32 | SettingType::U32) {
+            return Ok(ResolutionPolicy::Renderer);
+        }
+        let raw = values
+            .get("resolution")
+            .cloned()
+            .unwrap_or_else(|| setting_default_value(schema));
+        let value = coerce_and_validate("resolution", &raw, schema)?;
+        Ok(if value == "-2" {
+            ResolutionPolicy::Auto
+        } else {
+            ResolutionPolicy::Renderer
+        })
+    }
+}
+
 impl SettingDef {
+    pub fn validate_constraints(&self, key: &str) -> Result<(), ValidationError> {
+        if self.choices.is_some()
+            && (self.min.is_some() || self.max.is_some() || self.step.is_some())
+        {
+            return Err(ValidationError::MixedConstraints {
+                key: key.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// Bare-minimum constructor for tests and generated defaults.
     /// Optional schema metadata is filled with `None`.
     pub fn new(ty: SettingType, default: toml::Value, identity: bool) -> Self {
@@ -320,6 +375,9 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidationError {
+    MixedConstraints {
+        key: String,
+    },
     /// Setting value couldn't be coerced into the schema's declared
     /// type.
     BadSettingType {
@@ -335,7 +393,7 @@ pub enum ValidationError {
         min: Option<String>,
         max: Option<String>,
     },
-    /// String setting value didn't match any entry in the manifest's
+    /// Setting value didn't match any entry in the manifest's
     /// `choices` allowlist.
     BadChoice {
         key: String,
@@ -347,6 +405,10 @@ pub enum ValidationError {
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ValidationError::MixedConstraints { key } => write!(
+                f,
+                "plugin setting '{key}' cannot combine choices with min, max or step"
+            ),
             ValidationError::BadSettingType { key, expected, got } => write!(
                 f,
                 "plugin setting '{key}' expected type {expected:?}, got {got:?}"
@@ -372,6 +434,16 @@ pub fn check_setting_bounds(
     coerced: &str,
     schema: &SettingDef,
 ) -> std::result::Result<(), ValidationError> {
+    schema.validate_constraints(key)?;
+    if let Some(choices) = schema.choices.as_ref() {
+        if !choices.iter().any(|choice| choice == coerced) {
+            return Err(ValidationError::BadChoice {
+                key: key.to_string(),
+                got: coerced.to_string(),
+                choices: choices.clone(),
+            });
+        }
+    }
     match schema.ty {
         SettingType::U32 => {
             let v: u32 = coerced
@@ -433,19 +505,7 @@ pub fn check_setting_bounds(
             }
             Ok(())
         }
-        SettingType::String => {
-            if let Some(choices) = schema.choices.as_ref() {
-                if !choices.iter().any(|c| c == coerced) {
-                    return Err(ValidationError::BadChoice {
-                        key: key.to_string(),
-                        got: coerced.to_string(),
-                        choices: choices.clone(),
-                    });
-                }
-            }
-            Ok(())
-        }
-        SettingType::Bool => Ok(()),
+        SettingType::String | SettingType::Bool => Ok(()),
     }
 }
 
@@ -1053,6 +1113,126 @@ types = ["image"]
             extras: Vec::new(),
             settings: Default::default(),
             legacy_events: None,
+        }
+    }
+
+    #[test]
+    fn auto_resolution_policy_respects_the_schema_and_default() {
+        let mut def = renderer("test", "1", false, "image");
+        let mut setting = test_setting(SettingType::I32, toml::Value::Integer(-2), true);
+        setting.choices = Some(["-2", "0", "1", "2", "3", "4"].map(String::from).to_vec());
+        def.settings.insert("resolution".into(), setting);
+        assert_eq!(
+            def.resolution_policy(&HashMap::new()).unwrap(),
+            ResolutionPolicy::Auto
+        );
+        for fixed in ["0", "1", "2", "3", "4"] {
+            assert_eq!(
+                def.resolution_policy(&HashMap::from([("resolution".into(), fixed.into())]))
+                    .unwrap(),
+                ResolutionPolicy::Renderer
+            );
+        }
+        let auto = HashMap::from([("resolution".into(), "-2".into())]);
+        assert_eq!(
+            def.resolution_policy(&auto).unwrap(),
+            ResolutionPolicy::Auto
+        );
+        for invalid in ["-1", "5", "-3"] {
+            assert!(def
+                .resolution_policy(&HashMap::from([("resolution".into(), invalid.into())]))
+                .is_err());
+        }
+        def.settings.get_mut("resolution").unwrap().min = Some(toml::Value::Integer(0));
+        def.settings.get_mut("resolution").unwrap().max = Some(toml::Value::Integer(4));
+        def.settings.get_mut("resolution").unwrap().choices = None;
+        def.settings.get_mut("resolution").unwrap().default = toml::Value::Integer(0);
+        assert!(def.resolution_policy(&auto).is_err());
+        assert_eq!(
+            def.resolution_policy(&HashMap::new()).unwrap(),
+            ResolutionPolicy::Renderer
+        );
+        assert_eq!(
+            def.resolution_policy(&HashMap::from([("resolution".into(), "4".into())]))
+                .unwrap(),
+            ResolutionPolicy::Renderer
+        );
+    }
+
+    #[test]
+    fn renderer_settings_reject_mixed_constraints() {
+        let renderer = r#"
+            bin = "renderer"
+            types = ["image"]
+            [settings.resolution]
+            type = "i32"
+            default = 0
+        "#;
+        for constraint in ["min = 0", "max = 4", "step = 1"] {
+            let range = format!("{renderer}\n{constraint}");
+            assert!(toml::from_str::<RendererDef>(&range).is_ok());
+            for choices in ["choices = [\"0\", \"1\"]", "choices = []"] {
+                let error =
+                    toml::from_str::<RendererDef>(&format!("{range}\n{choices}")).unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("cannot combine choices with min, max or step"));
+            }
+        }
+        assert!(
+            toml::from_str::<RendererDef>(&format!("{renderer}\nchoices = [\"0\", \"1\"]")).is_ok()
+        );
+        assert!(toml::from_str::<RendererDef>(renderer).is_ok());
+
+        let mut setting = test_setting(SettingType::I32, toml::Value::Integer(0), true);
+        setting.choices = Some(vec!["0".into()]);
+        setting.step = Some(toml::Value::Integer(1));
+        assert!(matches!(
+            coerce_and_validate("resolution", "0", &setting),
+            Err(ValidationError::MixedConstraints { .. })
+        ));
+    }
+
+    #[test]
+    fn image_video_resolution_defaults_and_custom_extent() {
+        for source in [
+            include_str!("../../plugins/org.waywallen.image/plugin.toml"),
+            include_str!("../../plugins/org.waywallen.video/plugin.toml"),
+        ] {
+            let manifest: PluginManifest = toml::from_str(source).unwrap();
+            for renderer in manifest.renderers.values() {
+                let resolution = &renderer.settings["resolution"];
+                assert!(
+                    resolution.min.is_none()
+                        && resolution.max.is_none()
+                        && resolution.step.is_none()
+                );
+                for invalid in ["-3", "5"] {
+                    assert!(coerce_and_validate("resolution", invalid, resolution).is_err());
+                }
+                assert_eq!(
+                    renderer.resolution_policy(&HashMap::new()).unwrap(),
+                    ResolutionPolicy::Auto
+                );
+                assert_eq!(
+                    renderer
+                        .resolution_policy(&HashMap::from([("resolution".into(), "-1".into())]))
+                        .unwrap(),
+                    ResolutionPolicy::Renderer
+                );
+                let extent = &renderer.settings["custom_extent"];
+                assert!(extent.identity);
+                assert_eq!(setting_default_value(extent), "1080");
+                for valid in ["1", "540", "1080", "8192"] {
+                    assert_eq!(
+                        coerce_and_validate("custom_extent", valid, extent).unwrap(),
+                        valid
+                    );
+                }
+                for invalid in ["0", "-1", "8193"] {
+                    assert!(coerce_and_validate("custom_extent", invalid, extent).is_err());
+                }
+            }
         }
     }
 

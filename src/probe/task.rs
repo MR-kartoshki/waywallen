@@ -57,6 +57,14 @@ pub async fn run_pending(
     db: &DatabaseConnection,
     probe: Arc<dyn MediaProbe>,
 ) -> Result<ProbeStats> {
+    run_pending_notifying(db, probe, None).await
+}
+
+pub async fn run_pending_notifying(
+    db: &DatabaseConnection,
+    probe: Arc<dyn MediaProbe>,
+    changes: Option<&watch::Sender<u64>>,
+) -> Result<ProbeStats> {
     let mut stats = ProbeStats::default();
     let started = std::time::Instant::now();
 
@@ -124,12 +132,12 @@ pub async fn run_pending(
                 media: media_result,
             });
             if pending.len() >= COMMIT_BATCH {
-                flush_pending(db, &mut pending, &mut stats).await;
+                flush_pending(db, &mut pending, &mut stats, changes).await;
             }
         }
     }
 
-    flush_pending(db, &mut pending, &mut stats).await;
+    flush_pending(db, &mut pending, &mut stats, changes).await;
 
     stats.elapsed_ms = started.elapsed().as_millis();
 
@@ -150,6 +158,7 @@ pub async fn scheduler_loop(
     db: DatabaseConnection,
     probe: Arc<dyn MediaProbe>,
     mut shutdown_rx: watch::Receiver<bool>,
+    changes: watch::Sender<u64>,
 ) -> Result<()> {
     log::info!("probe scheduler started (tick={:?})", PROBE_TICK);
     let mut interval = tokio::time::interval(PROBE_TICK);
@@ -164,7 +173,7 @@ pub async fn scheduler_loop(
                 }
             }
             _ = interval.tick() => {
-                if let Err(e) = run_pending(&db, probe.clone()).await {
+                if let Err(e) = run_pending_notifying(&db, probe.clone(), Some(&changes)).await {
                     log::warn!("probe scheduler tick failed: {e:#}");
                 }
             }
@@ -178,6 +187,7 @@ async fn flush_pending(
     db: &DatabaseConnection,
     pending: &mut Vec<PendingWrite>,
     stats: &mut ProbeStats,
+    changes: Option<&watch::Sender<u64>>,
 ) {
     if pending.is_empty() {
         return;
@@ -213,6 +223,11 @@ async fn flush_pending(
 
     match outcome {
         Ok(_) => {
+            if delta_stat_changed > 0 || delta_media_probed > 0 {
+                if let Some(changes) = changes {
+                    changes.send_modify(|generation| *generation += 1);
+                }
+            }
             stats.stat_done += delta_stat_done;
             stats.stat_changed += delta_stat_changed;
             stats.media_probed += delta_media_probed;
@@ -232,5 +247,59 @@ fn join_path(root: &str, rel: &str) -> String {
         root.to_owned()
     } else {
         format!("{root}/{rel}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn probe_batch_notifies_after_metadata_commit() {
+        let db = crate::model::connect_url("sqlite::memory:").await.unwrap();
+        let plugin = repo::upsert_plugin(&db, "probe-test", "").await.unwrap();
+        let library = repo::add_library(&db, plugin.id, "/probe-test")
+            .await
+            .unwrap();
+        let item = repo::upsert_item(
+            &db,
+            repo::ItemUpsertArgs {
+                plugin_id: plugin.id,
+                library_id: library.id,
+                path: "preview.png",
+                ty: "image",
+                display_name: "preview",
+                preview_path: None,
+                description: None,
+                external_id: None,
+                web_url: None,
+                size: None,
+                width: None,
+                height: None,
+                content_rating: None,
+            },
+        )
+        .await
+        .unwrap();
+        let (changes, rx) = watch::channel(0);
+        let mut stats = ProbeStats::default();
+        let mut pending = vec![PendingWrite {
+            id: item.id,
+            path: "preview.png".into(),
+            stat: None,
+            media: Some(MediaMeta {
+                width: Some(1920),
+                height: Some(1080),
+            }),
+        }];
+        flush_pending(&db, &mut pending, &mut stats, Some(&changes)).await;
+        assert_eq!(*rx.borrow(), 1);
+        assert_eq!(
+            repo::get_entry(&db, item.id).await.unwrap().unwrap().width,
+            Some(1920)
+        );
+        flush_pending(&db, &mut pending, &mut stats, Some(&changes)).await;
+        assert_eq!(*rx.borrow(), 1);
+        assert_eq!(stats.write_errors, 0);
     }
 }

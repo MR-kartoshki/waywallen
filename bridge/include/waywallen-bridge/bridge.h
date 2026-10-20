@@ -169,6 +169,12 @@ int ww_bridge_send_release_syncobj(int sock, int release_syncobj_fd);
  * The helper does NOT enforce this — the renderer must construct the
  * arrays consistently or the daemon's unflatten_caps will reject. */
 int ww_bridge_send_format_caps(int sock, const waywallen_producer_capabilities_t* capabilities);
+int ww_bridge_send_render_target_capabilities(
+    int sock, const waywallen_render_target_capabilities_t* capabilities);
+int ww_bridge_send_render_target_result(int sock, const waywallen_render_target_outcome_t* result);
+int ww_bridge_render_target_directive(const waywallen_render_target_capabilities_t* capabilities,
+                                      const waywallen_render_target_config_t*       config,
+                                      waywallen_buffer_directive_t*                 out);
 
 /* Emit `BindFailed` — non-terminal report that the renderer could not
  * satisfy a `negotiate_buffers` request. Daemon blacklists the
@@ -337,6 +343,7 @@ typedef struct ww_bridge_control {
         ww_evt_in_negotiate_buffers_t           negotiate_buffers;
         ww_evt_in_request_frame_t               request_frame;
         ww_evt_in_set_log_level_t               set_log_level;
+        ww_evt_in_configure_render_target_t     configure_render_target;
     } u;
 } ww_bridge_control_t;
 

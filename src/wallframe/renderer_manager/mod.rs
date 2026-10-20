@@ -33,6 +33,7 @@ use crate::settings::SettingsStore;
 mod handshake;
 mod pointer;
 mod reader;
+pub mod render_target;
 mod reported_state;
 mod subscriptions;
 mod writer;
@@ -49,6 +50,41 @@ pub use subscriptions::{
     RendererSubscriptionSnapshot,
 };
 use writer::*;
+
+fn buffer_directive(scheme: crate::wallframe::dma::negotiate::NegotiatedScheme) -> BufferDirective {
+    BufferDirective {
+        format: BufferFormat {
+            fourcc: scheme.fourcc,
+            modifier: scheme.modifier,
+            plane_count: scheme.plane_count,
+        },
+        sync_mode: scheme.sync_mode,
+        color: scheme.color,
+        mem_hint: scheme.mem_hint,
+        count: scheme.count,
+        path: match scheme.path {
+            crate::wallframe::dma::negotiate::PathCategory::OptimizedSameDevice => {
+                BufferPath::OptimizedSameDevice
+            }
+            crate::wallframe::dma::negotiate::PathCategory::OptimizedSameVendor => {
+                BufferPath::OptimizedSameVendor
+            }
+            crate::wallframe::dma::negotiate::PathCategory::CompatLinear => {
+                BufferPath::CompatLinear
+            }
+            crate::wallframe::dma::negotiate::PathCategory::CompatCpuReadback => {
+                BufferPath::CompatCpuReadback
+            }
+        },
+        memory_source: match scheme.mem_source {
+            crate::wallframe::dma::negotiate::MemSource::GpuNative => BufferMemorySource::GpuNative,
+            crate::wallframe::dma::negotiate::MemSource::GpuLinear => BufferMemorySource::GpuLinear,
+            crate::wallframe::dma::negotiate::MemSource::DmabufHeap => {
+                BufferMemorySource::DmabufHeap
+            }
+        },
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -452,6 +488,7 @@ pub struct RendererHandle {
     /// picked. Reported in Ready and used by DMA-BUF negotiation.
     pub gpu: DrmNode,
     spawn_request: SpawnRequest,
+    render_target: Arc<StdMutex<render_target::State>>,
 
     /// Sole owner-facing path for daemon-to-renderer writes. A dedicated
     /// thread serializes reliable control traffic and latest-only audio.
@@ -628,11 +665,23 @@ impl RendererHandle {
     /// Most recently dispatched [`crate::wallframe::dma::negotiate::NegotiatedScheme`]
     /// for this renderer. `None` until a negotiation succeeds.
     pub fn current_scheme(&self) -> Option<crate::wallframe::dma::negotiate::NegotiatedScheme> {
+        let target = self.render_target.lock().unwrap();
+        if target.policy == crate::plugin::renderer_registry::ResolutionPolicy::Auto {
+            return target.queue.applied().map(|allocation| allocation.scheme);
+        }
         self.last_dispatched_scheme.lock().ok().and_then(|g| *g)
     }
 
     /// True iff `pool` matches the most recently dispatched scheme.
     pub fn scheme_satisfied_by(&self, pool: &PublishedPool) -> bool {
+        {
+            let target = self.render_target.lock().unwrap();
+            if target.policy == crate::plugin::renderer_registry::ResolutionPolicy::Auto
+                && target.applied_generation != Some(pool.generation)
+            {
+                return false;
+            }
+        }
         let Some(scheme) = self.current_scheme() else {
             return false;
         };
@@ -964,6 +1013,9 @@ impl RendererManager {
                 .ok_or_else(|| Error::NoRendererForType(req.wp_type.clone()))?,
         };
         validate_renderer_spawn_version(&renderer_def)?;
+        let resolution_policy = renderer_def
+            .resolution_policy(&req.settings)
+            .map_err(|error| Error::InvalidArgument(error.to_string()))?;
 
         // Create a listening UDS at a temp path; the child connects to
         // it shortly after exec().
@@ -1103,6 +1155,11 @@ impl RendererManager {
             Arc::new(StdMutex::new(None));
         let pending_configure: Arc<StdMutex<Option<u32>>> = Arc::new(StdMutex::new(None));
         let reported_state = Arc::new(StdMutex::new(RendererReportedState::default()));
+        let render_target = Arc::new(StdMutex::new(render_target::State {
+            policy: resolution_policy,
+            ..Default::default()
+        }));
+        let reader_render_target = Arc::clone(&render_target);
         let progress = Arc::new(StdMutex::new(RendererProgress::new()));
 
         let reader_stream = std_stream
@@ -1156,6 +1213,7 @@ impl RendererManager {
             process_group,
             gpu,
             spawn_request: req.clone(),
+            render_target,
             writer,
             events: events_tx,
             _release_events_tx: release_events_tx.clone(),
@@ -1228,6 +1286,7 @@ impl RendererManager {
                 reader_latest_frame,
                 reader_release_syncobj,
                 reader_format_caps,
+                reader_render_target,
                 reader_pending,
                 reader_reported_state,
                 reader_progress,
@@ -1386,6 +1445,9 @@ impl RendererManager {
             .get(id)
             .await
             .ok_or_else(|| Error::RendererNotFound(id.to_string()))?;
+        if handle.automatic_resolution() {
+            return Ok(());
+        }
         // Idempotence: skip if we've already dispatched this exact scheme.
         if let Ok(guard) = handle.last_dispatched_scheme.lock() {
             if guard.as_ref() == Some(&scheme) {
@@ -1407,42 +1469,7 @@ impl RendererManager {
             scheme.mem_source,
         );
         let msg = ControlMsg::NegotiateBuffers {
-            directive: BufferDirective {
-                format: BufferFormat {
-                    fourcc: scheme.fourcc,
-                    modifier: scheme.modifier,
-                    plane_count: scheme.plane_count,
-                },
-                sync_mode: scheme.sync_mode,
-                color: scheme.color,
-                mem_hint: scheme.mem_hint,
-                count: scheme.count,
-                path: match scheme.path {
-                    crate::wallframe::dma::negotiate::PathCategory::OptimizedSameDevice => {
-                        BufferPath::OptimizedSameDevice
-                    }
-                    crate::wallframe::dma::negotiate::PathCategory::OptimizedSameVendor => {
-                        BufferPath::OptimizedSameVendor
-                    }
-                    crate::wallframe::dma::negotiate::PathCategory::CompatLinear => {
-                        BufferPath::CompatLinear
-                    }
-                    crate::wallframe::dma::negotiate::PathCategory::CompatCpuReadback => {
-                        BufferPath::CompatCpuReadback
-                    }
-                },
-                memory_source: match scheme.mem_source {
-                    crate::wallframe::dma::negotiate::MemSource::GpuNative => {
-                        BufferMemorySource::GpuNative
-                    }
-                    crate::wallframe::dma::negotiate::MemSource::GpuLinear => {
-                        BufferMemorySource::GpuLinear
-                    }
-                    crate::wallframe::dma::negotiate::MemSource::DmabufHeap => {
-                        BufferMemorySource::DmabufHeap
-                    }
-                },
-            },
+            directive: buffer_directive(scheme),
         };
         self.send_control(id, msg).await?;
         if let Ok(mut guard) = handle.last_dispatched_scheme.lock() {
@@ -1942,9 +1969,22 @@ impl RendererHandle {
         Arc<Self>,
         tokio::sync::mpsc::UnboundedReceiver<crate::wallframe::sync::FrameRecord>,
     ) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let (handle, _peer) = Self::test_stub_with_peer_inner(id, wp_type, Some(tx));
+        let (handle, _peer, rx) = Self::test_stub_with_peer_and_frame_records(id, wp_type);
         (handle, rx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_stub_with_peer_and_frame_records(
+        id: &str,
+        wp_type: &str,
+    ) -> (
+        Arc<Self>,
+        StdUnixStream,
+        tokio::sync::mpsc::UnboundedReceiver<crate::wallframe::sync::FrameRecord>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (handle, peer) = Self::test_stub_with_peer_inner(id, wp_type, Some(tx));
+        (handle, peer, rx)
     }
 
     fn test_stub_with_peer_inner(
@@ -1969,6 +2009,7 @@ impl RendererHandle {
             pid: None,
             process_group: None,
             gpu: DrmNode::UNKNOWN,
+            render_target: Arc::new(StdMutex::new(render_target::State::default())),
             spawn_request: SpawnRequest {
                 wp_type: wp_type.into(),
                 renderer_name: Some("test-stub".into()),
@@ -3060,6 +3101,7 @@ mod reuse_tests {
             pid: None,
             process_group: None,
             gpu: DrmNode::UNKNOWN,
+            render_target: Arc::new(StdMutex::new(render_target::State::default())),
             spawn_request: SpawnRequest {
                 wp_type: "video".into(),
                 renderer_name: Some("waywallen-mpv".into()),

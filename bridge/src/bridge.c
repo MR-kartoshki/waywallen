@@ -359,6 +359,61 @@ int ww_bridge_send_bind_failed(int sock, const waywallen_bind_failure_t* failure
     WW_SEND_EVENT(sock, WW_EVT_BIND_FAILED, ww_evt_bind_failed_encode, &m, NULL, 0);
 }
 
+int ww_bridge_send_render_target_capabilities(
+    int sock, const waywallen_render_target_capabilities_t* capabilities) {
+    if (! capabilities) return -EINVAL;
+    ww_evt_render_target_capabilities_t m = { .capabilities = *capabilities };
+    WW_SEND_EVENT(sock,
+                  WW_EVT_RENDER_TARGET_CAPABILITIES,
+                  ww_evt_render_target_capabilities_encode,
+                  &m,
+                  NULL,
+                  0);
+}
+
+int ww_bridge_send_render_target_result(int sock, const waywallen_render_target_outcome_t* result) {
+    if (! result) return -EINVAL;
+    ww_evt_render_target_result_t m = { .result = *result };
+    WW_SEND_EVENT(
+        sock, WW_EVT_RENDER_TARGET_RESULT, ww_evt_render_target_result_encode, &m, NULL, 0);
+}
+
+int ww_bridge_render_target_directive(const waywallen_render_target_capabilities_t* caps,
+                                      const waywallen_render_target_config_t*       config,
+                                      waywallen_buffer_directive_t*                 out) {
+    if (! caps || ! config || ! out || (caps->mode != 1 && caps->mode != 2) ||
+        ! caps->reference_width || ! caps->reference_height || ! config->revision ||
+        config->capabilities_revision != caps->revision || ! caps->width_alignment ||
+        ! caps->height_alignment || ! config->width || ! config->height ||
+        config->width < caps->min_width || config->height < caps->min_height ||
+        config->width > caps->max_width || config->height > caps->max_height ||
+        config->width % caps->width_alignment || config->height % caps->height_alignment)
+        return -EINVAL;
+    if (caps->mode == 1 &&
+        (config->width > caps->reference_width || config->height > caps->reference_height))
+        return -EINVAL;
+    if (caps->mode == 2 &&
+        (config->width > (caps->reference_width >= caps->reference_height ? 7680u : 4320u) ||
+         config->height > (caps->reference_width >= caps->reference_height ? 4320u : 7680u)))
+        return -EINVAL;
+    /* Both aligned dimensions must admit the same content scale. */
+    if ((uint64_t)(config->width - caps->width_alignment) * caps->reference_height >=
+            (uint64_t)config->height * caps->reference_width ||
+        (uint64_t)(config->height - caps->height_alignment) * caps->reference_width >=
+            (uint64_t)config->width * caps->reference_height)
+        return -EINVAL;
+    *out = (waywallen_buffer_directive_t) {
+        .format        = { config->fourcc, config->modifier, config->plane_count },
+        .sync_mode     = config->sync_mode,
+        .color         = config->color,
+        .mem_hint      = config->mem_hint,
+        .count         = config->count,
+        .path          = config->path,
+        .memory_source = config->memory_source,
+    };
+    return 0;
+}
+
 int ww_bridge_send_error(int sock, const char* msg) {
     if (! msg) return -EINVAL;
     ww_evt_error_t m;
@@ -512,6 +567,10 @@ int ww_bridge_recv_control(int sock, ww_bridge_control_t* out) {
     case WW_EVT_IN_SET_LOG_LEVEL:
         rc = ww_evt_in_set_log_level_decode(body, body_len, &out->u.set_log_level);
         break;
+    case WW_EVT_IN_CONFIGURE_RENDER_TARGET:
+        rc = ww_evt_in_configure_render_target_decode(
+            body, body_len, &out->u.configure_render_target);
+        break;
     default: rc = WW_ERR_UNKNOWN_OPCODE; break;
     }
 
@@ -542,6 +601,9 @@ void ww_bridge_control_free(ww_bridge_control_t* msg) {
         break;
     case WW_EVT_IN_REQUEST_FRAME: ww_evt_in_request_frame_free(&msg->u.request_frame); break;
     case WW_EVT_IN_SET_LOG_LEVEL: ww_evt_in_set_log_level_free(&msg->u.set_log_level); break;
+    case WW_EVT_IN_CONFIGURE_RENDER_TARGET:
+        ww_evt_in_configure_render_target_free(&msg->u.configure_render_target);
+        break;
     default: break;
     }
     memset(msg, 0, sizeof(*msg));

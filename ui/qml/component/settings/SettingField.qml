@@ -80,10 +80,12 @@ ColumnLayout {
 
     readonly property bool isRenderNode: schema.key === "render_node"
     readonly property bool isResolution: schema.key === "resolution"
+    readonly property bool hasChoices: !!schema.choices && schema.choices.length > 0
 
     // Wire enum value → display label. Kept in sync with
     // <waywallen-bridge/resolution.h> WW_RESOLUTION_*.
     readonly property var resolutionPresets: [
+        { value: "-2", label: qsTr("Auto") },
         { value: "-1", label: qsTr("Custom") },
         { value: "0", label: qsTr("Origin") },
         { value: "1", label: "720p" },
@@ -93,13 +95,15 @@ ColumnLayout {
     ]
 
     readonly property bool isTextField: {
+        if (root.hasChoices)
+            return false;
         const t = schema.type;
         if (t === kBool)
             return false;
         if (root.isRenderNode || root.isResolution)
             return false;
         if (t === kString)
-            return !(schema.choices && schema.choices.length > 0);
+            return true;
         // Integer settings fall back to a dense textfield when the range is too
         // wide to be useful on a slider.
         if (root._isIntegerType(t))
@@ -186,6 +190,8 @@ ColumnLayout {
                 return renderNodeField;
             if (root.isResolution)
                 return resolutionField;
+            if (root.hasChoices)
+                return choiceField;
             switch (root.schema.type) {
             case root.kBool:
                 return boolField;
@@ -196,8 +202,6 @@ ColumnLayout {
             case root.kF32:
                 return root._hasNumericRange() ? sliderField : numericField;
             case root.kString:
-                if (root.schema.choices && root.schema.choices.length > 0)
-                    return choiceField;
                 return stringField;
             default:
                 return stringField;
@@ -343,7 +347,7 @@ ColumnLayout {
     }
 
     // Resolution chip list. Wire value is the WW_RESOLUTION_* enum
-    // (string-encoded), filtered against the schema's [min, max] range.
+    // (string-encoded), filtered by choices or the legacy [min, max] range.
     Component {
         id: resolutionField
         Flow {
@@ -364,7 +368,9 @@ ColumnLayout {
                     id: resChip
                     required property var modelData
                     readonly property int modelValue: parseInt(modelData.value, 10)
-                    visible: modelValue >= parent.loValue && modelValue <= parent.hiValue
+                    visible: root.hasChoices
+                        ? root.schema.choices.indexOf(modelData.value) >= 0
+                        : modelValue >= parent.loValue && modelValue <= parent.hiValue
                     text: modelData.label
                     checked: root.value === modelData.value
                     onClicked: root._emit(modelData.value)

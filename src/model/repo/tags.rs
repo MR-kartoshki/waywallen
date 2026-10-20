@@ -115,8 +115,8 @@ pub async fn list_tags_of_item(db: &DatabaseConnection, item_id: i64) -> Result<
 
 /// Batch variant of `list_tags_of_item`: one round-trip resolving the
 /// tag set for every requested item, grouped by item id.
-pub async fn list_tags_for_items(
-    db: &DatabaseConnection,
+pub async fn list_tags_for_items<C: ConnectionTrait>(
+    db: &C,
     item_ids: &[i64],
 ) -> Result<HashMap<i64, Vec<String>>> {
     if item_ids.is_empty() {

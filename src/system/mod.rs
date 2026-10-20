@@ -8,6 +8,7 @@ pub(crate) mod gamemode;
 mod gpu;
 pub(crate) mod mpris;
 pub(crate) mod notifications;
+pub(crate) mod power;
 pub(crate) mod session;
 pub(crate) mod tray;
 

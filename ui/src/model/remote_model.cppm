@@ -19,6 +19,7 @@ struct RemoteRow {
     Q_PROPERTY(QString title MEMBER title)
     Q_PROPERTY(QString previewUrl MEMBER previewUrl)
     Q_PROPERTY(QString author MEMBER author)
+    Q_PROPERTY(QString authorAvatarUrl MEMBER authorAvatarUrl)
     Q_PROPERTY(QString wpType MEMBER wpType)
     Q_PROPERTY(int acquisitionState MEMBER acquisitionState)
 
@@ -28,6 +29,7 @@ public:
     QString title;
     QString previewUrl;
     QString author;
+    QString authorAvatarUrl;
     QString wpType;
     int     acquisitionState { 0 };
 };

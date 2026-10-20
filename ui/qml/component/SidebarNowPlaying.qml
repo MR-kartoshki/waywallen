@@ -12,7 +12,7 @@ Item {
     property real expansionProgress: expanded ? 1 : 0
     readonly property real horizontalInset: 12
     readonly property real cardRadius: MD.Token.shape.corner.medium
-    readonly property bool pointerHovered: carousel.hovered
+    readonly property bool pointerHovered: carouselHover.hovered
     signal openRequested(string wallpaperId)
 
     implicitHeight: visible ? carousel.implicitHeight + (root.model?.count > 1 ? (carousel.chromeRowHeight + carousel.chromeRowSpacing) * expansionProgress : 0) : 0
@@ -30,6 +30,9 @@ Item {
 
     MD.Carousel {
         id: carousel
+        HoverHandler {
+            id: carouselHover
+        }
         hoverEnabled: true
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.min(root.width, itemExtent + root.horizontalInset * 2)

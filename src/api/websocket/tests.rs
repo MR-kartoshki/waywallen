@@ -1,6 +1,86 @@
 use super::*;
 
 #[test]
+fn library_names_protocol_round_trip() {
+    use prost::Message;
+    let snapshot = LibrarySnapshot {
+        id: 17,
+        name: "My wallpapers".into(),
+        path: "/a/wallpapers".into(),
+        plugin_name: "image".into(),
+    };
+    let event = libraries_replace_event(vec![snapshot.clone()]);
+    let instance = library_instance_to_pb(snapshot);
+    let decoded = pb::LibraryInstance::decode(instance.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.name, "My wallpapers");
+    assert_eq!(decoded.id, 17);
+    let Some(pb::event::Payload::LibrarySnapshot(event)) = event.payload else {
+        panic!("expected library snapshot");
+    };
+    assert_eq!(event.libraries, [decoded]);
+    let add = pb::LibraryAddRequest {
+        path: "/a".into(),
+        plugin_name: "image".into(),
+        name: None,
+    };
+    assert!(
+        pb::LibraryAddRequest::decode(add.encode_to_vec().as_slice())
+            .unwrap()
+            .name
+            .is_none()
+    );
+    let named = pb::LibraryAddRequest {
+        name: Some("Same name".into()),
+        ..add
+    };
+    assert_eq!(
+        pb::LibraryAddRequest::decode(named.encode_to_vec().as_slice())
+            .unwrap()
+            .name
+            .as_deref(),
+        Some("Same name")
+    );
+}
+
+#[test]
+fn library_visibility_presence_and_validation() {
+    use prost::Message;
+    let absent =
+        pb::GlobalSettings::decode(pb::GlobalSettings::default().encode_to_vec().as_slice())
+            .unwrap();
+    assert_eq!(
+        library_visibility_from_pb(absent.wallpaper_library_visibility.as_ref()).unwrap(),
+        None
+    );
+    // The former include-only selection used tag 30, with packed library_ids at tag 1.
+    let legacy = pb::GlobalSettings::decode(&[0xf2, 0x01, 0x03, 0x0a, 0x01, 0x02][..]).unwrap();
+    assert!(legacy.wallpaper_library_visibility.is_none());
+    let mut settings = crate::settings::GlobalSettings::default();
+    settings.wallpaper_hidden_library_ids = vec![9, 2, 9];
+    let encoded = global_to_pb(&settings).encode_to_vec();
+    let decoded = pb::GlobalSettings::decode(encoded.as_slice()).unwrap();
+    assert_eq!(
+        library_visibility_from_pb(decoded.wallpaper_library_visibility.as_ref()).unwrap(),
+        Some(vec![2, 9])
+    );
+    settings.wallpaper_hidden_library_ids.clear();
+    let decoded =
+        pb::GlobalSettings::decode(global_to_pb(&settings).encode_to_vec().as_slice()).unwrap();
+    assert_eq!(
+        library_visibility_from_pb(decoded.wallpaper_library_visibility.as_ref()).unwrap(),
+        Some(vec![])
+    );
+    for id in [0, -1] {
+        assert!(
+            library_visibility_from_pb(Some(&pb::WallpaperLibraryVisibility {
+                hidden_library_ids: vec![id]
+            }))
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn auto_replay_scope_roundtrip_and_invalid_writes() {
     for scope in [
         crate::settings::AutoScope::CurrentDisplay,
@@ -214,6 +294,57 @@ fn catalog_query_wire_mapping_round_trips() {
     assert_eq!(sort_rule_from_pb(&sort_rule_to_pb(&sort)), Some(sort));
 }
 
+#[test]
+fn library_filter_rules_round_trip_and_reject_invalid() {
+    use crate::catalog::query::{FilterPredicate, FilterRule, WallpaperSelection};
+    use crate::model::playlist_source::PlaylistSource;
+    use crate::settings::WallpaperFilterState;
+
+    for exclude in [false, true] {
+        let rule = FilterRule {
+            group: 0,
+            predicate: FilterPredicate::Library { value: 42, exclude },
+        };
+        let wire = filter_rule_to_pb(&rule);
+        assert_eq!(filter_rule_from_pb(&wire), Some(rule.clone()));
+        let state = WallpaperFilterState::from_catalog(&[rule.clone()], &[]);
+        assert_eq!(state.to_catalog().0, vec![rule.clone()]);
+        let stored = serde_json::to_string(&state).unwrap();
+        let loaded: WallpaperFilterState = serde_json::from_str(&stored).unwrap();
+        assert_eq!(loaded.to_catalog().0, vec![rule.clone()]);
+        let source = PlaylistSource::Smart(WallpaperSelection {
+            filters: vec![rule],
+            ..Default::default()
+        });
+        assert_eq!(
+            PlaylistSource::decode_selection(&source.encode_selection().unwrap().unwrap()).unwrap(),
+            source
+        );
+    }
+
+    for (value, condition) in [(0, 1), (-1, 1), (42, 0), (42, 3), (42, 99)] {
+        let wire = pb::WallpaperFilterRule {
+            r#type: pb::WallpaperFilterType::Library as i32,
+            group: 0,
+            payload: Some(pb::wallpaper_filter_rule::Payload::IntFilter(
+                pb::WallpaperIntFilter { value, condition },
+            )),
+        };
+        assert!(filter_rule_from_pb(&wire).is_none());
+    }
+    let legacy = pb::WallpaperFilterRule {
+        r#type: pb::WallpaperFilterType::Library as i32,
+        group: 0,
+        payload: Some(pb::wallpaper_filter_rule::Payload::StringFilter(
+            pb::WallpaperStringFilter {
+                value: "/same".into(),
+                condition: pb::StringCondition::Is as i32,
+            },
+        )),
+    };
+    assert!(filter_rule_from_pb(&legacy).is_none());
+}
+
 fn health_response(request_id: u64) -> pb::Response {
     ok_response(
         request_id,
@@ -349,4 +480,44 @@ async fn response_task_cancels_pending_dispatch() {
         Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected)
     ));
     while requests.join_next().await.is_some() {}
+}
+#[test]
+fn smart_playlist_source_validation_and_roundtrip() {
+    use crate::catalog::query::{HiddenFilter, WallpaperSelection};
+    use crate::model::playlist_source::PlaylistSource;
+    for hidden in [
+        HiddenFilter::Exclude,
+        HiddenFilter::Only,
+        HiddenFilter::Include,
+    ] {
+        let source = PlaylistSource::Smart(WallpaperSelection {
+            hidden,
+            ..Default::default()
+        });
+        let wire = playlist_source_to_pb(&source);
+        assert_eq!(playlist_source_from_pb(Some(&wire), &[]).unwrap(), source);
+        assert!(playlist_source_from_pb(Some(&wire), &["1".into()]).is_err());
+    }
+    assert!(playlist_source_from_pb(Some(&pb::PlaylistSource::default()), &[]).is_err());
+    assert!(playlist_source_from_pb(None, &["invalid".into()]).is_err());
+    assert!(playlist_source_from_pb(None, &["0".into()]).is_err());
+    let mut request = pb::WallpaperListRequest::default();
+    request.filters.push(pb::WallpaperFilterRule {
+        r#type: 1000,
+        ..Default::default()
+    });
+    assert!(selection_from_request(&request).is_err());
+    request.filters.clear();
+    request.filter_logics.push(pb::FilterLogic {
+        op: 1,
+        group_a: 0,
+        group_b: 1,
+    });
+    assert!(selection_from_request(&request).is_err());
+    request.filter_logics.clear();
+    request.sorts.push(pb::WallpaperSortRule {
+        key: 1,
+        direction: 99,
+    });
+    assert!(selection_from_request(&request).is_err());
 }

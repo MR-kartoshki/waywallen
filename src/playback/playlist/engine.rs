@@ -19,6 +19,7 @@ pub struct Definition {
     pub interval_secs: u32,
     pub synchronized_selection: bool,
     pub items: Vec<String>,
+    pub keep_empty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,20 @@ pub struct DisplayStatus {
     pub position: u32,
     pub count: u32,
     pub remaining_secs: u32,
+    pub waiting: bool,
+    pub error: String,
+}
+
+#[derive(Clone)]
+pub struct RefreshTicket {
+    session: Arc<PlaylistSession>,
+    definition: Definition,
+}
+
+impl RefreshTicket {
+    pub fn playlist_id(&self) -> i64 {
+        self.definition.id
+    }
 }
 
 struct SessionTarget {
@@ -52,6 +67,7 @@ struct SessionData {
     seed: u64,
     synchronized_cursor: PlaylistCursor,
     targets: BTreeMap<TargetId, SessionTarget>,
+    error: String,
 }
 
 impl SessionData {
@@ -63,6 +79,7 @@ impl SessionData {
             seed,
             synchronized_cursor,
             targets: BTreeMap::new(),
+            error: String::new(),
         }
     }
 
@@ -229,11 +246,8 @@ impl SessionData {
                 .values()
                 .find_map(|target| target.current.clone())
         });
-        let mut synchronized_cursor = PlaylistCursor::new(
-            definition.items.clone(),
-            definition.mode,
-            self.synchronized_cursor.rng.max(1),
-        );
+        let mut synchronized_cursor = self.synchronized_cursor.clone();
+        synchronized_cursor.replace_items(definition.items.clone(), definition.mode);
         let shared_valid = previous_shared
             .as_deref()
             .is_some_and(|entry_id| synchronized_cursor.set_current(entry_id));
@@ -243,11 +257,8 @@ impl SessionData {
 
         let mut invalid_targets = Vec::new();
         for (target_id, target) in &mut self.targets {
-            let mut cursor = PlaylistCursor::new(
-                definition.items.clone(),
-                definition.mode,
-                target.cursor.rng.max(1),
-            );
+            let mut cursor = target.cursor.clone();
+            cursor.replace_items(definition.items.clone(), definition.mode);
             let current_valid = target
                 .current
                 .as_deref()
@@ -328,7 +339,11 @@ impl PlaylistSession {
             .map(|duration| duration.as_nanos() as u64)
             .unwrap_or(1)
             .max(1);
-        let interval_secs = definition.interval_secs;
+        let interval_secs = if definition.items.is_empty() {
+            0
+        } else {
+            definition.interval_secs
+        };
         let data = Arc::new(Mutex::new(SessionData::new(definition, seed)));
         let (handle, receiver) = make_handle();
         handle.set_interval(interval_secs);
@@ -430,7 +445,7 @@ impl Engine {
             resume_by_display,
             first_frame_timeout,
         } = activation;
-        if definition.items.is_empty() {
+        if definition.items.is_empty() && !definition.keep_empty {
             return Err(Error::PlaylistInvalid("playlist has no wallpapers".into()));
         }
         targets.retain(|target| !target.display_ids.is_empty());
@@ -528,7 +543,11 @@ impl Engine {
             }
         }
         if !created {
-            session.handle.set_interval(definition.interval_secs);
+            session.handle.set_interval(if definition.items.is_empty() {
+                0
+            } else {
+                definition.interval_secs
+            });
             if definition_changed && !interval_changed {
                 session.handle.kick();
             }
@@ -727,8 +746,8 @@ impl Engine {
                 .unwrap()
                 .map(|deadline| deadline.saturating_duration_since(now).as_secs() as u32)
                 .unwrap_or(0);
-            let interval_secs = session.handle.interval();
             let data = session.data.lock().await;
+            let interval_secs = data.definition.interval_secs;
             let synchronized = data.synchronized();
             for target in data.targets.values() {
                 let position = if synchronized {
@@ -746,6 +765,8 @@ impl Engine {
                         position,
                         count: data.definition.items.len() as u32,
                         remaining_secs,
+                        waiting: data.definition.keep_empty && data.definition.items.is_empty(),
+                        error: data.error.clone(),
                     });
                 }
             }
@@ -785,6 +806,71 @@ impl Engine {
         definition: Definition,
         apply: ApplyPort,
     ) -> Result<Vec<DisplayId>> {
+        self.rebuild_inner(definition, apply, None).await
+    }
+
+    pub async fn refresh_tickets(&self) -> Vec<RefreshTicket> {
+        let sessions = self
+            .state
+            .lock()
+            .await
+            .by_playlist
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut tickets = Vec::new();
+        for session in sessions {
+            let definition = session.data.lock().await.definition.clone();
+            if definition.keep_empty {
+                tickets.push(RefreshTicket {
+                    session,
+                    definition,
+                });
+            }
+        }
+        tickets
+    }
+
+    pub async fn refresh(
+        &self,
+        ticket: RefreshTicket,
+        definition: Definition,
+        apply: ApplyPort,
+    ) -> Result<()> {
+        self.rebuild_inner(definition, apply, Some(ticket))
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn refresh_error(&self, ticket: &RefreshTicket, error: String) -> bool {
+        let _operation = self.operations.lock().await;
+        let session = self
+            .state
+            .lock()
+            .await
+            .by_playlist
+            .get(&ticket.playlist_id())
+            .cloned();
+        let Some(session) = session else {
+            return false;
+        };
+        if !Arc::ptr_eq(&session, &ticket.session) {
+            return false;
+        }
+        let mut data = session.data.lock().await;
+        if data.definition != ticket.definition || data.error == error {
+            return false;
+        }
+        data.error = error;
+        true
+    }
+
+    async fn rebuild_inner(
+        &self,
+        definition: Definition,
+        apply: ApplyPort,
+        ticket: Option<RefreshTicket>,
+    ) -> Result<Vec<DisplayId>> {
         let operation = self.operations.lock().await;
         let session = self
             .state
@@ -796,7 +882,14 @@ impl Engine {
         let Some(session) = session else {
             return Ok(Vec::new());
         };
-        if definition.items.is_empty() {
+        if let Some(ticket) = ticket {
+            if !Arc::ptr_eq(&session, &ticket.session)
+                || session.data.lock().await.definition != ticket.definition
+            {
+                return Ok(Vec::new());
+            }
+        }
+        if definition.items.is_empty() && !definition.keep_empty {
             let display_ids = session.data.lock().await.display_ids();
             {
                 let mut state = self.state.lock().await;
@@ -808,12 +901,17 @@ impl Engine {
             return Ok(display_ids);
         }
         let old_definition = session.data.lock().await.definition.clone();
+        session.data.lock().await.error.clear();
         if old_definition == definition {
             return Ok(Vec::new());
         }
         let assignments = session.data.lock().await.reconfigure(definition.clone());
-        session.handle.set_interval(definition.interval_secs);
-        if old_definition.interval_secs == definition.interval_secs {
+        session.handle.set_interval(if definition.items.is_empty() {
+            0
+        } else {
+            definition.interval_secs
+        });
+        if !assignments.is_empty() && old_definition.interval_secs == definition.interval_secs {
             session.handle.kick();
         }
         drop(operation);
@@ -836,7 +934,15 @@ impl Engine {
             .get(&playlist_id)
             .cloned()
         {
-            session.handle.set_interval(interval_secs);
+            let mut data = session.data.lock().await;
+            data.definition.interval_secs = interval_secs;
+            session
+                .handle
+                .set_interval(if data.definition.items.is_empty() {
+                    0
+                } else {
+                    interval_secs
+                });
         }
     }
 }
@@ -906,6 +1012,7 @@ mod tests {
             interval_secs: 0,
             synchronized_selection,
             items: vec!["a".into(), "b".into(), "c".into()],
+            keep_empty: false,
         }
     }
 
@@ -1170,6 +1277,7 @@ mod tests {
                         interval_secs: 0,
                         synchronized_selection: true,
                         items: vec!["42".into()],
+                        keep_empty: false,
                     },
                     targets: vec![target(7)],
                     resume_by_display: HashMap::new(),
@@ -1229,5 +1337,59 @@ mod tests {
 
         assert!(!engine.step(1, port).await.unwrap());
         assert!(applied.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn smart_playlist_waits_and_rejects_stale_session_refresh() {
+        let engine = Engine::new();
+        let (port, applied) = capture_port();
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let mut def = definition(1, true);
+        def.keep_empty = true;
+        def.items.clear();
+        let activation = Activation {
+            definition: def.clone(),
+            targets: vec![target(10)],
+            resume_by_display: HashMap::new(),
+            first_frame_timeout: None,
+        };
+        engine
+            .activate(activation.clone(), port.clone(), shutdown.clone())
+            .await
+            .unwrap();
+        let status = engine.status().await;
+        assert_eq!(status[0].count, 0);
+        assert_eq!(status[0].current_id, None);
+        assert_eq!(engine.owned_display_ids().await, vec![10]);
+        let stale = engine.refresh_tickets().await.pop().unwrap();
+        engine.deactivate(&[10]).await;
+        engine
+            .activate(activation, port.clone(), shutdown)
+            .await
+            .unwrap();
+        let mut populated = def.clone();
+        populated.items = vec!["new".into()];
+        engine
+            .refresh(stale, populated.clone(), port.clone())
+            .await
+            .unwrap();
+        assert_eq!(engine.status().await[0].count, 0);
+        let ticket = engine.refresh_tickets().await.pop().unwrap();
+        engine
+            .refresh(ticket, populated.clone(), port.clone())
+            .await
+            .unwrap();
+        assert_eq!(engine.status().await[0].current_id.as_deref(), Some("new"));
+        let ticket = engine.refresh_tickets().await.pop().unwrap();
+        assert!(engine.refresh_error(&ticket, "query failed".into()).await);
+        assert_eq!(engine.status().await[0].count, 1);
+        assert_eq!(engine.status().await[0].error, "query failed");
+        applied.lock().await.clear();
+        engine.rebuild(populated, port.clone()).await.unwrap();
+        assert!(engine.status().await[0].error.is_empty());
+        assert!(applied.lock().await.is_empty());
+        assert!(engine.rebuild(def, port).await.unwrap().is_empty());
+        assert_eq!(engine.status().await[0].current_id, None);
+        assert_eq!(engine.owned_display_ids().await, vec![10]);
     }
 }

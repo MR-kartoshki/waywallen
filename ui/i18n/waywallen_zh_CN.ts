@@ -72,6 +72,14 @@
 <context>
     <name>AddLibraryPage</name>
     <message>
+        <source>Library name (optional)</source>
+        <translation>库名称（可选）</translation>
+    </message>
+    <message>
+        <source>Leave empty to use the folder name.</source>
+        <translation>留空则使用文件夹名称。</translation>
+    </message>
+    <message>
         <location filename="../qml/page/AddLibraryPage.qml" line="9"/>
         <location filename="../qml/page/AddLibraryPage.qml" line="136"/>
         <source>Add Library</source>
@@ -96,6 +104,10 @@
 </context>
 <context>
     <name>AddToPlaylistSheetContent</name>
+    <message>
+        <source>No manual playlists found</source>
+        <translation>没有可手动添加壁纸的播放列表</translation>
+    </message>
     <message>
         <location filename="../qml/page/wallpaper/AddToPlaylistSheetContent.qml" line="25"/>
         <source>Add to playlist</source>
@@ -789,6 +801,38 @@
 <context>
     <name>PlaylistEditPage</name>
     <message>
+        <source>Smart playlist</source>
+        <translation>智能播放列表</translation>
+    </message>
+    <message>
+        <source>Wallpapers matching these filters are updated automatically.</source>
+        <translation>自动更新符合这些筛选条件的壁纸。</translation>
+    </message>
+    <message>
+        <source>Default order</source>
+        <translation>默认顺序</translation>
+    </message>
+    <message>
+        <source>Type</source>
+        <translation>类型</translation>
+    </message>
+    <message>
+        <source>Size</source>
+        <translation>大小</translation>
+    </message>
+    <message>
+        <source>Last modified</source>
+        <translation>最后修改</translation>
+    </message>
+    <message>
+        <source>Reverse order</source>
+        <translation>反向排序</translation>
+    </message>
+    <message>
+        <source>Waiting for matching wallpapers</source>
+        <translation>等待匹配的壁纸</translation>
+    </message>
+    <message>
         <location filename="../qml/page/PlaylistEditPage.qml" line="14"/>
         <source>Edit playlist</source>
         <translation>编辑播放列表</translation>
@@ -886,6 +930,14 @@
 </context>
 <context>
     <name>PlaylistListSheet</name>
+    <message>
+        <source>Create smart playlist</source>
+        <translation>新建智能播放列表</translation>
+    </message>
+    <message>
+        <source>Smart playlist</source>
+        <translation>智能播放列表</translation>
+    </message>
     <message>
         <source>Hidden wallpapers</source>
         <translation>隐藏的壁纸</translation>
@@ -2123,9 +2175,41 @@ Related display: #%1</source>
         <source>Maximum cache size</source>
         <translation>最大缓存大小</translation>
     </message>
+    <message>
+        <source>On battery</source>
+        <translation>使用电池时</translation>
+    </message>
 </context>
 <context>
     <name>SourceManagePage</name>
+    <message>
+        <source>Rename library</source>
+        <translation>重命名库</translation>
+    </message>
+    <message>
+        <source>Library name</source>
+        <translation>库名称</translation>
+    </message>
+    <message>
+        <source>Removed source #%1</source>
+        <translation>已移除的来源 #%1</translation>
+    </message>
+    <message>
+        <source>Clear hidden state</source>
+        <translation>清除隐藏状态</translation>
+    </message>
+    <message>
+        <source>Hide source</source>
+        <translation>隐藏来源</translation>
+    </message>
+    <message>
+        <source>Show source</source>
+        <translation>显示来源</translation>
+    </message>
+    <message>
+        <source>Remove library</source>
+        <translation>移除库</translation>
+    </message>
     <message>
         <location filename="../qml/page/SourceManagePage.qml" line="10"/>
         <source>Library Manager</source>
@@ -2311,6 +2395,10 @@ Unsaved frame state may be lost.</source>
 </context>
 <context>
     <name>StringFilter</name>
+    <message>
+        <source>Apply</source>
+        <translation>应用</translation>
+    </message>
     <message>
         <location filename="../qml/component/filter/StringFilter.qml" line="16"/>
         <source>contains</source>
@@ -2677,6 +2765,10 @@ Unsaved frame state may be lost.</source>
 <context>
     <name>WallpaperFilter</name>
     <message>
+        <source>Library</source>
+        <translation>库</translation>
+    </message>
+    <message>
         <location filename="../qml/component/filter/WallpaperFilter.qml" line="23"/>
         <source>Name</source>
         <translation>名称</translation>
@@ -2719,6 +2811,14 @@ Unsaved frame state may be lost.</source>
 </context>
 <context>
     <name>WallpaperFilterDialog</name>
+    <message>
+        <source>Clear rules</source>
+        <translation>清空规则</translation>
+    </message>
+    <message>
+        <source>Add group</source>
+        <translation>添加分组</translation>
+    </message>
     <message>
         <source>Visibility</source>
         <translation>可见性</translation>
@@ -3285,6 +3385,37 @@ Unsaved frame state may be lost.</source>
         <location filename="../src/tray_i18n.cpp" line="23"/>
         <source>Unmute</source>
         <translation>取消静音</translation>
+    </message>
+</context>
+<context>
+    <name>LibraryFilter</name>
+    <message>
+        <source>includes</source>
+        <translation>包含</translation>
+    </message>
+    <message>
+        <source>excludes</source>
+        <translation>排除</translation>
+    </message>
+    <message>
+        <source>Unavailable library #%1</source>
+        <translation>不可用的库 #%1</translation>
+    </message>
+    <message>
+        <source>Select library</source>
+        <translation>选择库</translation>
+    </message>
+</context>
+
+<context>
+    <name>WallpaperFilterRules</name>
+    <message>
+        <source>Add rule</source>
+        <translation>添加规则</translation>
+    </message>
+    <message>
+        <source>Delete group</source>
+        <translation>删除分组</translation>
     </message>
 </context>
 </TS>

@@ -24,11 +24,17 @@ namespace waywallen
 Library::Library(const proto::LibraryInstance& info, QObject* parent)
     : QObject(parent),
       m_id(info.id_proto()),
+      m_name(info.name()),
       m_path(info.path()),
       m_plugin_name(info.pluginName()) {}
 
 void Library::updateFrom(const proto::LibraryInstance& info) {
     rstd_assert(info.id_proto() == m_id, "Library::updateFrom id mismatch");
+
+    if (m_name != info.name()) {
+        m_name = info.name();
+        Q_EMIT nameChanged();
+    }
 
     if (m_path != info.path()) {
         m_path = info.path();
@@ -100,8 +106,9 @@ void LibraryManager::replaceAll(const QList<proto::LibraryInstance>& list) {
         return a->id() < b->id();
     });
 
-    m_ordered = std::move(next_ordered);
-    m_by_id   = std::move(next_by_id);
+    m_ordered     = std::move(next_ordered);
+    m_by_id       = std::move(next_by_id);
+    m_initialized = true;
     Q_EMIT librariesChanged();
 }
 

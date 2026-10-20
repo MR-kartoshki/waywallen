@@ -2,7 +2,7 @@ use super::*;
 
 impl DisplayState {
     pub(super) fn display_paused(&self) -> bool {
-        self.manual_paused || self.auto_paused
+        self.manual_paused || self.auto_paused || self.global_paused
     }
 
     pub(super) fn consumption_changed(&mut self, was_paused: bool) {
@@ -14,6 +14,19 @@ impl DisplayState {
 }
 
 impl Inner {
+    pub(super) fn set_global_pause(&mut self, paused: bool) -> bool {
+        if self.manual_paused == paused {
+            return false;
+        }
+        self.manual_paused = paused;
+        for display in self.displays.values_mut() {
+            let was_paused = display.display_paused();
+            display.global_paused = paused && display.info.role.accepts_global_pause();
+            display.consumption_changed(was_paused);
+        }
+        true
+    }
+
     pub(super) fn has_frame_demand(&self, link: &Link) -> bool {
         link.enabled
             && self.displays.get(&link.display_id).is_some_and(|state| {
@@ -24,9 +37,17 @@ impl Inner {
             })
     }
 
+    pub(super) fn has_playback_demand(&self, link: &Link) -> bool {
+        // Paused consumers can still refresh a new binding without advancing playback.
+        self.has_frame_demand(link)
+            && self
+                .displays
+                .get(&link.display_id)
+                .is_some_and(|state| !state.global_paused)
+    }
+
     pub(super) fn effective_display_paused(&self, display: &DisplayState) -> bool {
         display.display_paused()
-            || self.manual_paused
             || self
                 .table
                 .links_for_display(display.info.id)

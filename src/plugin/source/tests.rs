@@ -403,6 +403,13 @@ function M.discover.search(ctx, params)
     return {
         items = {
             { id = "abc", title = names.name(), preview_url = "", author = "" },
+            {
+                id = "def",
+                title = names.name(),
+                preview_url = "",
+                author = "Someone",
+                author_avatar_url = "https://example.invalid/avatar/someone.png",
+            },
         },
         has_more = false,
     }
@@ -410,6 +417,7 @@ end
 function M.discover.details(ctx, id)
     return {
         author = "Imported Author",
+        author_avatar_url = "https://example.invalid/avatar/" .. id .. ".png",
         description = names.name(),
         size = "42",
         width = 10,
@@ -449,6 +457,12 @@ return M
     let search =
         block_value(async { mgr.call_discover("imported", "", "", 1, &[]).await.unwrap() });
     assert_eq!(search.items[0].wp_type, "image");
+    // A row without an avatar is still accepted and simply has none.
+    assert_eq!(search.items[0].author_avatar_url, "");
+    assert_eq!(
+        search.items[1].author_avatar_url,
+        "https://example.invalid/avatar/someone.png"
+    );
 
     let dl = block_value(async { mgr.call_download("imported", "abc").await.unwrap() });
     assert_eq!(dl.wp_type, "image");
@@ -463,6 +477,10 @@ return M
     assert_eq!(detail.height, Some(20));
     assert_eq!(detail.web_url, "https://example.invalid/item/abc");
     assert_eq!(detail.author, "Imported Author");
+    assert_eq!(
+        detail.author_avatar_url,
+        "https://example.invalid/avatar/abc.png"
+    );
 }
 
 #[test]
@@ -985,12 +1003,29 @@ end
     // A wallpaper Wallhaven reports no uploader for keeps the empty author
     // the listing has always produced.
     assert_eq!(mapped.get::<String>("author").unwrap(), "");
+    assert_eq!(mapped.get::<String>("author_avatar_url").unwrap(), "");
 
     let uploader = runtime.lua.create_table().unwrap();
     uploader.set("username", "Qtn").unwrap();
-    detail.set("uploader", uploader).unwrap();
-    let mapped: LuaTable = details.call(detail).unwrap();
+    detail.set("uploader", uploader.clone()).unwrap();
+    let mapped: LuaTable = details.call(detail.clone()).unwrap();
     assert_eq!(mapped.get::<String>("author").unwrap(), "Qtn");
+    // An uploader without an avatar keeps the name and leaves the picture out.
+    assert_eq!(mapped.get::<String>("author_avatar_url").unwrap(), "");
+
+    let avatar = runtime.lua.create_table().unwrap();
+    avatar
+        .set("32px", "https://wallhaven.cc/images/user/avatar/32/1.png")
+        .unwrap();
+    avatar
+        .set("128px", "https://wallhaven.cc/images/user/avatar/128/1.png")
+        .unwrap();
+    uploader.set("avatar", avatar).unwrap();
+    let mapped: LuaTable = details.call(detail).unwrap();
+    assert_eq!(
+        mapped.get::<String>("author_avatar_url").unwrap(),
+        "https://wallhaven.cc/images/user/avatar/128/1.png"
+    );
 }
 
 #[test]

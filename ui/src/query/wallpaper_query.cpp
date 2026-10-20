@@ -25,14 +25,54 @@ namespace waywallen
 WallpaperListQuery::WallpaperListQuery(QObject* parent): QueryList(parent) {
     setLimit(0);
     tdata()->set_store(tdata(), AppStore::instance()->wallpapers);
-    connect_requet_reload(&WallpaperListQuery::wpTypeChanged, this);
-    connect_requet_reload(&WallpaperListQuery::filterStateChanged, this);
-    connect_requet_reload(&WallpaperListQuery::sortsChanged, this);
-    connect_requet_reload(&WallpaperListQuery::searchTextChanged, this);
-    connect_requet_reload(&WallpaperListQuery::skipTypesChanged, this);
-    connect_requet_reload(&WallpaperListQuery::filterTagsChanged, this);
-    connect_requet_reload(&WallpaperListQuery::skipContentRatingsChanged, this);
-    connect_requet_reload(&WallpaperListQuery::hiddenFilterChanged, this);
+    connect(this, &WallpaperListQuery::wpTypeChanged, this, &WallpaperListQuery::invalidateList);
+    connect(
+        this, &WallpaperListQuery::filterStateChanged, this, &WallpaperListQuery::invalidateList);
+    connect(this, &WallpaperListQuery::sortsChanged, this, &WallpaperListQuery::invalidateList);
+    connect(
+        this, &WallpaperListQuery::searchTextChanged, this, &WallpaperListQuery::invalidateList);
+    connect(this, &WallpaperListQuery::skipTypesChanged, this, &WallpaperListQuery::invalidateList);
+    connect(
+        this, &WallpaperListQuery::filterTagsChanged, this, &WallpaperListQuery::invalidateList);
+    connect(this,
+            &WallpaperListQuery::skipContentRatingsChanged,
+            this,
+            &WallpaperListQuery::invalidateList);
+    connect(
+        this, &WallpaperListQuery::hiddenFilterChanged, this, &WallpaperListQuery::invalidateList);
+    connect(this,
+            &WallpaperListQuery::hiddenLibraryIdsChanged,
+            this,
+            &WallpaperListQuery::invalidateList);
+    connect(this, &WallpaperListQuery::limitChanged, this, &WallpaperListQuery::invalidateList);
+    connect(this,
+            &WallpaperListQuery::filterStateChanged,
+            this,
+            &WallpaperListQuery::hasOtherFiltersChanged);
+    connect(this,
+            &WallpaperListQuery::skipTypesChanged,
+            this,
+            &WallpaperListQuery::hasOtherFiltersChanged);
+    connect(this,
+            &WallpaperListQuery::filterTagsChanged,
+            this,
+            &WallpaperListQuery::hasOtherFiltersChanged);
+    connect(this,
+            &WallpaperListQuery::skipContentRatingsChanged,
+            this,
+            &WallpaperListQuery::hasOtherFiltersChanged);
+    connect(this,
+            &WallpaperListQuery::hiddenFilterChanged,
+            this,
+            &WallpaperListQuery::hasOtherFiltersChanged);
+}
+
+void WallpaperListQuery::invalidateList() {
+    Q_EMIT selectionChanged();
+    ++m_generation;
+    cancel();
+    m_reload_pending = true;
+    delayReload();
 }
 
 auto WallpaperListQuery::wpType() const -> const QString& { return m_wp_type; }
@@ -154,19 +194,39 @@ void WallpaperListQuery::setHiddenFilter(int v) {
 }
 
 auto WallpaperListQuery::hasActiveFilters() const -> bool {
+    return ! m_hidden_library_ids.isEmpty() || hasOtherFilters();
+}
+
+auto WallpaperListQuery::hasOtherFilters() const -> bool {
     return ! m_filters.isEmpty() || ! m_skip_types.isEmpty() || ! m_filter_tags.isEmpty() ||
            ! m_skip_content_ratings.isEmpty() || m_hidden_filter != 0;
 }
 
 auto WallpaperListQuery::total() const -> qint32 { return m_total; }
 
-void WallpaperListQuery::reload() {
-    setOffset(0);
-    setNoMore(false);
-    setStatus(Status::Querying);
-    auto backend = App::instance()->backend();
+auto WallpaperListQuery::hiddenLibraryIds() const -> const QList<qlonglong>& {
+    return m_hidden_library_ids;
+}
 
-    auto req   = proto::Request {};
+void WallpaperListQuery::setHiddenLibraryIds(const QList<qlonglong>& ids) {
+    auto normalized = ids;
+    std::sort(normalized.begin(), normalized.end());
+    normalized.erase(std::unique(normalized.begin(), normalized.end()), normalized.end());
+    if (normalized == m_hidden_library_ids) return;
+    const bool had_active = hasActiveFilters();
+    m_hidden_library_ids  = std::move(normalized);
+    setOffset(0);
+    Q_EMIT hiddenLibraryIdsChanged();
+    if (had_active != hasActiveFilters()) Q_EMIT hasActiveFiltersChanged();
+}
+
+void WallpaperListQuery::toggleLibraryHidden(qlonglong id) {
+    auto ids = m_hidden_library_ids;
+    if (! ids.removeOne(id)) ids.append(id);
+    setHiddenLibraryIds(ids);
+}
+
+auto WallpaperListQuery::listRequest() const -> proto::WallpaperListRequest {
     auto inner = proto::WallpaperListRequest {};
     inner.setWpType(m_wp_type);
     inner.setFilters(m_filters);
@@ -177,14 +237,70 @@ void WallpaperListQuery::reload() {
     inner.setFilterTags(m_filter_tags);
     inner.setSkipContentRatings(m_skip_content_ratings);
     inner.setHiddenFilter(static_cast<control::v1::WallpaperHiddenFilter>(m_hidden_filter));
+    auto selection = proto::WallpaperLibraryVisibility {};
+    auto ids       = selection.hiddenLibraryIds();
+    for (auto id : m_hidden_library_ids) ids.append(id);
+    selection.setHiddenLibraryIds(std::move(ids));
+    inner.setLibraryVisibility(selection);
+    return inner;
+}
+
+auto WallpaperListQuery::selection() const -> QVariant {
+    proto::WallpaperSelection s;
+    s.setFilters(m_filters);
+    s.setFilterLogics(m_filter_logics);
+    s.setSorts(m_sorts);
+    s.setSearchText(m_search_text);
+    s.setWpType(m_wp_type);
+    s.setSkipTypes(m_skip_types);
+    s.setFilterTags(m_filter_tags);
+    s.setSkipContentRatings(m_skip_content_ratings);
+    s.setHiddenFilter(static_cast<proto::WallpaperHiddenFilter>(m_hidden_filter));
+    auto ids = s.hiddenLibraryIds();
+    for (auto id : m_hidden_library_ids) ids.append(id);
+    s.setHiddenLibraryIds(std::move(ids));
+    return QVariant::fromValue(s);
+}
+
+bool WallpaperListQuery::matchesSelection(const QVariant& value) const {
+    return value.canConvert<proto::WallpaperSelection>() &&
+           selection().value<proto::WallpaperSelection>() ==
+               value.value<proto::WallpaperSelection>();
+}
+
+void WallpaperListQuery::restoreSelection(const QVariant& value) {
+    if (! value.canConvert<proto::WallpaperSelection>()) return;
+    const auto s = value.value<proto::WallpaperSelection>();
+    replaceFilterState(s.filters(), s.filterLogics());
+    setSorts(s.sorts());
+    setSearchText(s.searchText());
+    setWpType(s.wpType());
+    setSkipTypes(s.skipTypes());
+    setFilterTags(s.filterTags());
+    setSkipContentRatings(s.skipContentRatings());
+    setHiddenFilter(static_cast<int>(s.hiddenFilter()));
+    QList<qlonglong> ids;
+    for (auto id : s.hiddenLibraryIds()) ids.append(static_cast<qint64>(id));
+    setHiddenLibraryIds(ids);
+}
+
+void WallpaperListQuery::reload() {
+    const auto generation = ++m_generation;
+    m_reload_pending      = false;
+    setOffset(0);
+    setNoMore(false);
+    setStatus(Status::Querying);
+    auto backend = App::instance()->backend();
+    auto req     = proto::Request {};
+    auto inner   = listRequest();
     initReqForReload(inner);
     req.setWallpaperList(std::move(inner));
 
     auto self = QWatcher { this };
-    spawn([self, backend, req = std::move(req)]() mutable -> task<void> {
+    spawn([self, backend, req = std::move(req), generation]() mutable -> task<void> {
         auto result = co_await backend->send(std::move(req));
         if (! co_await QAsyncResult::qexecutor()) co_return;
-        if (! self) co_return;
+        if (! self || self->m_generation != generation) co_return;
 
         self->inspect_set(result, [self](const proto::Response& rsp) {
             const auto&                   list_rsp = rsp.wallpaperList();
@@ -211,30 +327,22 @@ void WallpaperListQuery::reload() {
 }
 
 void WallpaperListQuery::fetchMore(qint32) {
-    if (noMore()) return;
+    if (noMore() || m_reload_pending || status() == Status::Querying) return;
+    const auto generation = m_generation;
     setStatus(Status::Querying);
     auto backend = App::instance()->backend();
 
     auto req   = proto::Request {};
-    auto inner = proto::WallpaperListRequest {};
-    inner.setWpType(m_wp_type);
-    inner.setFilters(m_filters);
-    inner.setFilterLogics(m_filter_logics);
-    inner.setSorts(m_sorts);
-    inner.setSearchText(m_search_text);
-    inner.setSkipTypes(m_skip_types);
-    inner.setFilterTags(m_filter_tags);
-    inner.setSkipContentRatings(m_skip_content_ratings);
-    inner.setHiddenFilter(static_cast<control::v1::WallpaperHiddenFilter>(m_hidden_filter));
+    auto inner = listRequest();
     initReqForFetchMore(inner);
     req.setWallpaperList(std::move(inner));
 
     const qint32 next_offset = offset() + 1;
     auto         self        = QWatcher { this };
-    spawn([self, backend, req = std::move(req), next_offset]() mutable -> task<void> {
+    spawn([self, backend, req = std::move(req), next_offset, generation]() mutable -> task<void> {
         auto result = co_await backend->send(std::move(req));
         if (! co_await QAsyncResult::qexecutor()) co_return;
-        if (! self) co_return;
+        if (! self || self->m_generation != generation) co_return;
 
         self->inspect_set(result, [self, next_offset](const proto::Response& rsp) {
             const auto&                   list_rsp = rsp.wallpaperList();

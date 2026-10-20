@@ -329,6 +329,7 @@ pub struct DiscoverItem {
     pub title: String,
     pub preview_url: String,
     pub author: String,
+    pub author_avatar_url: String,
     pub wp_type: String,
     pub extra: HashMap<String, String>,
 }
@@ -337,6 +338,7 @@ pub struct DiscoverItem {
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct DiscoverDetails {
     pub author: String,
+    pub author_avatar_url: String,
     pub description: String,
     pub size: String,
     pub width: Option<u32>,

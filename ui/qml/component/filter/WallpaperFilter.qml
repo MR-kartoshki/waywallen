@@ -15,6 +15,7 @@ MD.ItemDelegate {
     property var allTags: []
     property var valueLabels: ({})
     property var allContentRatings: []
+    property color backgroundColor: root.MD.MProp.color.surface
     property WC.wallpaperStringFilter emptyStringFilter
     property WC.wallpaperIntFilter emptyIntFilter
     property WC.wallpaperTagFilter emptyTagFilter
@@ -22,13 +23,46 @@ MD.ItemDelegate {
     font.capitalization: Font.MixedCase
 
     readonly property var typeOptions: [
-        { name: qsTr("Name"),           value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_NAME,    kind: "string"  },
-        { name: qsTr("Type"),           value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_WP_TYPE, kind: "wp_type" },
-        { name: qsTr("Width"),          value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_WIDTH,   kind: "int"     },
-        { name: qsTr("Height"),         value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_HEIGHT,  kind: "int"     },
-        { name: qsTr("Size"),           value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_SIZE,    kind: "int"     },
-        { name: qsTr("Tag"),            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_TAG,     kind: "tag"     },
-        { name: qsTr("Content rating"), value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_CONTENT_RATING, kind: "rating" }
+        {
+            name: qsTr("Name"),
+            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_NAME,
+            kind: "string"
+        },
+        {
+            name: qsTr("Type"),
+            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_WP_TYPE,
+            kind: "wp_type"
+        },
+        {
+            name: qsTr("Library"),
+            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_LIBRARY,
+            kind: "library"
+        },
+        {
+            name: qsTr("Width"),
+            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_WIDTH,
+            kind: "int"
+        },
+        {
+            name: qsTr("Height"),
+            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_HEIGHT,
+            kind: "int"
+        },
+        {
+            name: qsTr("Size"),
+            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_SIZE,
+            kind: "int"
+        },
+        {
+            name: qsTr("Tag"),
+            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_TAG,
+            kind: "tag"
+        },
+        {
+            name: qsTr("Content rating"),
+            value: WC.WallpaperFilterType.WALLPAPER_FILTER_TYPE_CONTENT_RATING,
+            kind: "rating"
+        }
     ]
 
     readonly property var currentOption: typeOptions.find(e => e.value === root.model.type) || null
@@ -40,6 +74,8 @@ MD.ItemDelegate {
             return stringSpec;
         if (currentOption.kind === "wp_type")
             return wpTypeSpec;
+        if (currentOption.kind === "library")
+            return librarySpec;
         if (currentOption.kind === "int")
             return intSpec;
         if (currentOption.kind === "tag")
@@ -50,7 +86,6 @@ MD.ItemDelegate {
     }
 
     function applyType(option) {
-        root.model.type = option.value;
         switch (option.kind) {
         case "string":
         case "wp_type":
@@ -60,10 +95,18 @@ MD.ItemDelegate {
         case "int":
             root.model.intFilter = emptyIntFilter;
             break;
+        case "library":
+            {
+                const value = emptyIntFilter;
+                value.condition = WC.IntCondition.INT_CONDITION_EQUAL;
+                root.model.intFilter = value;
+                break;
+            }
         case "tag":
             root.model.tagFilter = emptyTagFilter;
             break;
         }
+        root.model.type = option.value;
     }
 
     W.StringFilter {
@@ -80,6 +123,11 @@ MD.ItemDelegate {
         id: intSpec
         filter: root.currentOption && root.currentOption.kind === "int" ? root.model : null
     }
+    W.LibraryFilter {
+        id: librarySpec
+        filter: root.currentOption && root.currentOption.kind === "library" ? root.model : null
+        availableWidth: chipFlow.width
+    }
     W.TagFilter {
         id: tagSpec
         popupWindow: root.popupWindow
@@ -94,7 +142,9 @@ MD.ItemDelegate {
         allRatings: root.allContentRatings
         valueLabels: root.valueLabels
     }
-    W.EmptyFilter { id: emptySpec }
+    W.EmptyFilter {
+        id: emptySpec
+    }
 
     contentItem: RowLayout {
         Flow {
@@ -105,7 +155,7 @@ MD.ItemDelegate {
             MD.InputChip {
                 id: nameChip
                 text: root.currentOption ? root.currentOption.name : qsTr("Filter")
-                onClicked: typeMenu.open()
+                onSelectionRequested: typeMenu.open()
             }
 
             MD.InputChip {
@@ -115,7 +165,7 @@ MD.ItemDelegate {
                     const item = (spec.conditionModel || []).find(e => e.value === spec.condition);
                     return item ? item.name : "";
                 }
-                onClicked: conditionMenu.open()
+                onSelectionRequested: conditionMenu.open()
 
                 MD.Menu {
                     id: conditionMenu
@@ -146,7 +196,10 @@ MD.ItemDelegate {
                 const view = root.ListView.view;
                 if (!view || !view.model)
                     return;
-                view.model.removeRow(root.index);
+                if (view.model.rowCountInGroupOf(root.index) === 1)
+                    view.model.deleteGroup(root.model.group);
+                else
+                    view.model.removeRow(root.index);
             }
         }
     }
@@ -157,11 +210,10 @@ MD.ItemDelegate {
             if (!view || !view.model)
                 return 0;
             const model = view.model;
-            void(view.count);
-            return MD.Util.listCorners(model.rowIndexInGroup(root.index),
-                                       model.rowCountInGroupOf(root.index), 12);
+            void (view.count);
+            return MD.Util.listCorners(model.rowIndexInGroup(root.index), model.rowCountInGroupOf(root.index), 12);
         }
-        color: root.MD.MProp.color.surface
+        color: root.backgroundColor
     }
 
     MD.Menu {

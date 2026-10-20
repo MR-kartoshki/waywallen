@@ -338,8 +338,31 @@ const COLOR_MASK_ALPHA: u32 = COLOR_ALPHA_PREMUL | COLOR_ALPHA_STRAIGHT;
 /// Default pool size when both sides leave it unspecified.
 const DEFAULT_POOL_COUNT: u32 = 3;
 
-/// Pick a buffer scheme for a producer/consumer pair at `extent`.
-///
+/// Intersect all consumers sharing one producer allocation.
+pub fn common_consumers(consumers: &[PeerCaps]) -> Option<PeerCaps> {
+    let mut common = consumers.first()?.clone();
+    for consumer in &consumers[1..] {
+        if !common.identity.same_device(&consumer.identity) {
+            common.identity = DeviceIdentity::ZERO;
+        }
+        common.formats.by_fourcc.retain(|fourcc, modifiers| {
+            let Some(other) = consumer.formats.by_fourcc.get(fourcc) else {
+                return false;
+            };
+            modifiers.retain(|entry| other.contains(entry));
+            true
+        });
+        common.sync &= consumer.sync;
+        common.color &= consumer.color;
+        common.mem_hint &= consumer.mem_hint;
+        common.extent_max.0 = common.extent_max.0.min(consumer.extent_max.0);
+        common.extent_max.1 = common.extent_max.1.min(consumer.extent_max.1);
+        common.blacklist.extend(consumer.blacklist.iter().copied());
+    }
+    Some(common)
+}
+
+/// Pick a buffer scheme for a producer/consumer pair.
 pub fn pick(producer: &PeerCaps, consumer: &PeerCaps) -> Result<NegotiatedScheme, NegotiateError> {
     let same_dev = producer.identity.same_device(&consumer.identity);
     let sync_mode = pick_sync(producer.sync, consumer.sync)?;
@@ -732,6 +755,38 @@ mod tests {
             (1920, 1080),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn auto_resolution_common_consumers_intersect_formats_and_limits() {
+        let first = caps_one_fourcc(
+            DRM_FORMAT_ABGR8888,
+            &[(0, 1), (1, 1)],
+            ident_uuid(1),
+            SYNC_SYNCOBJ_TIMELINE,
+            DEFAULT_COLOR,
+            MEM_HINT_HOST_VISIBLE,
+        );
+        let mut second = first.clone();
+        second
+            .formats
+            .by_fourcc
+            .get_mut(&DRM_FORMAT_ABGR8888)
+            .unwrap()
+            .retain(|entry| entry.modifier == 0);
+        second.extent_max = (1280, 720);
+        let common = common_consumers(&[first.clone(), second.clone()]).unwrap();
+        assert_eq!(common.extent_max, (1280, 720));
+        assert_eq!(pick(&first, &common).unwrap().modifier, 0);
+        second.blacklist.insert((DRM_FORMAT_ABGR8888, 0));
+        let common = common_consumers(&[first.clone(), second.clone()]).unwrap();
+        assert!(pick(&first, &common).is_err());
+        second.identity = ident_uuid(2);
+        assert_eq!(
+            common_consumers(&[first, second]).unwrap().identity,
+            DeviceIdentity::ZERO
+        );
+        assert!(common_consumers(&[]).is_none());
     }
 
     fn ident_uuid(byte: u8) -> DeviceIdentity {

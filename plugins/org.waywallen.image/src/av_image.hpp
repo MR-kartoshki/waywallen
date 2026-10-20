@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace ww_image
 {
@@ -17,6 +18,20 @@ struct RgbaBuf {
 
 struct DecodeError {
     std::string message;
+};
+
+class ImageSession {
+public:
+    static std::unique_ptr<ImageSession> open(const std::string& path, DecodeError* err);
+    ~ImageSession();
+    uint32_t width() const;
+    uint32_t height() const;
+    RgbaBuf  decode(uint32_t width, uint32_t height, DecodeError* err);
+
+private:
+    struct Impl;
+    explicit ImageSession(std::unique_ptr<Impl>);
+    std::unique_ptr<Impl> impl_;
 };
 
 // Decode `path` (any container/codec FFmpeg understands) at the file's

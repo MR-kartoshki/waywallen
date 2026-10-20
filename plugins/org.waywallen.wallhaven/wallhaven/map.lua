@@ -34,6 +34,17 @@ local function uploader_name(detail)
     return uploader.username or ""
 end
 
+-- The uploader's avatar comes in 200/128/32/20 px; 128 stays sharp at the
+-- 32 px the detail panel draws it on a scaled display.
+local function uploader_avatar(detail)
+    local uploader = detail.uploader
+    if type(uploader) ~= "table" or type(uploader.avatar) ~= "table" then
+        return ""
+    end
+    local avatar = uploader.avatar
+    return avatar["128px"] or avatar["200px"] or avatar["32px"] or avatar["20px"] or ""
+end
+
 local function title(item)
     if item.id and item.id ~= "" then
         return "Wallhaven " .. item.id
@@ -60,6 +71,7 @@ function M.details(detail)
     local description = detail.source or detail.url or ""
     return {
         author = uploader_name(detail),
+        author_avatar_url = uploader_avatar(detail),
         description = description,
         size = tostring(detail.file_size or ""),
         width = detail.dimension_x,

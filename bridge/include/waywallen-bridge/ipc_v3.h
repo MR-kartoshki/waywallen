@@ -293,6 +293,44 @@ typedef struct waywallen_producer_capabilities {
     waywallen_extent_t max_extent;
 } waywallen_producer_capabilities_t;
 
+typedef struct waywallen_render_target_capabilities {
+    uint64_t revision;
+    uint32_t reference_width;
+    uint32_t reference_height;
+    uint32_t mode;
+    uint32_t min_width;
+    uint32_t min_height;
+    uint32_t max_width;
+    uint32_t max_height;
+    uint32_t width_alignment;
+    uint32_t height_alignment;
+} waywallen_render_target_capabilities_t;
+
+typedef struct waywallen_render_target_config {
+    uint64_t revision;
+    uint64_t capabilities_revision;
+    uint32_t width;
+    uint32_t height;
+    uint32_t fourcc;
+    uint64_t modifier;
+    uint32_t plane_count;
+    uint32_t sync_mode;
+    uint32_t color;
+    uint32_t mem_hint;
+    uint32_t count;
+    waywallen_buffer_path_t path;
+    waywallen_buffer_memory_source_t memory_source;
+} waywallen_render_target_config_t;
+
+typedef struct waywallen_render_target_outcome {
+    uint64_t revision;
+    uint32_t status;
+    uint32_t width;
+    uint32_t height;
+    uint64_t pool_generation;
+    char * message;
+} waywallen_render_target_outcome_t;
+
 typedef struct waywallen_renderer_init {
     uint32_t protocol_version;
     uint32_t spawn_version;
@@ -335,6 +373,9 @@ void waywallen_pointer_axis_free(waywallen_pointer_axis_t *value);
 void waywallen_pointer_button_free(waywallen_pointer_button_t *value);
 void waywallen_pointer_motion_free(waywallen_pointer_motion_t *value);
 void waywallen_producer_capabilities_free(waywallen_producer_capabilities_t *value);
+void waywallen_render_target_capabilities_free(waywallen_render_target_capabilities_t *value);
+void waywallen_render_target_config_free(waywallen_render_target_config_t *value);
+void waywallen_render_target_outcome_free(waywallen_render_target_outcome_t *value);
 void waywallen_renderer_init_free(waywallen_renderer_init_t *value);
 void waywallen_rgba_color_free(waywallen_rgba_color_t *value);
 void waywallen_renderer_state_free(waywallen_renderer_state_t *value);
@@ -358,6 +399,7 @@ typedef enum ww_event_in_op {
     WW_EVT_IN_AUDIO_WINDOW = 14,
     WW_EVT_IN_REQUEST_FRAME = 15,
     WW_EVT_IN_SET_LOG_LEVEL = 16,
+    WW_EVT_IN_CONFIGURE_RENDER_TARGET = 17,
 } ww_event_in_op_t;
 
 typedef enum ww_event_op {
@@ -371,6 +413,8 @@ typedef enum ww_event_op {
     WW_EVT_INIT_NACK = 8,
     WW_EVT_REPORT_STATE = 9,
     WW_EVT_SET_EVENT_SUBSCRIPTIONS = 10,
+    WW_EVT_RENDER_TARGET_CAPABILITIES = 11,
+    WW_EVT_RENDER_TARGET_RESULT = 12,
 } ww_event_op_t;
 
 typedef struct ww_evt_in_init_t {
@@ -437,6 +481,10 @@ typedef struct ww_evt_in_set_log_level_t {
     waywallen_log_level_t level;
 } ww_evt_in_set_log_level_t;
 
+typedef struct ww_evt_in_configure_render_target_t {
+    waywallen_render_target_config_t config;
+} ww_evt_in_configure_render_target_t;
+
 typedef struct ww_evt_ready_t {
     waywallen_drm_node_t drm_node;
 } ww_evt_ready_t;
@@ -476,6 +524,14 @@ typedef struct ww_evt_report_state_t {
 typedef struct ww_evt_set_event_subscriptions_t {
     waywallen_event_subscription_t subscription;
 } ww_evt_set_event_subscriptions_t;
+
+typedef struct ww_evt_render_target_capabilities_t {
+    waywallen_render_target_capabilities_t capabilities;
+} ww_evt_render_target_capabilities_t;
+
+typedef struct ww_evt_render_target_result_t {
+    waywallen_render_target_outcome_t result;
+} ww_evt_render_target_result_t;
 
 /* --- Per-message functions ---
  * encode:        append wire body to `out` (header is the caller's job)
@@ -564,6 +620,11 @@ int  ww_evt_in_set_log_level_decode(const uint8_t *buf, size_t len, ww_evt_in_se
 void ww_evt_in_set_log_level_free(ww_evt_in_set_log_level_t *m);
 uint32_t ww_evt_in_set_log_level_expected_fds(const ww_evt_in_set_log_level_t *m);
 
+int  ww_evt_in_configure_render_target_encode(const ww_evt_in_configure_render_target_t *m, ww_buf_t *out);
+int  ww_evt_in_configure_render_target_decode(const uint8_t *buf, size_t len, ww_evt_in_configure_render_target_t *out);
+void ww_evt_in_configure_render_target_free(ww_evt_in_configure_render_target_t *m);
+uint32_t ww_evt_in_configure_render_target_expected_fds(const ww_evt_in_configure_render_target_t *m);
+
 int  ww_evt_ready_encode(const ww_evt_ready_t *m, ww_buf_t *out);
 int  ww_evt_ready_decode(const uint8_t *buf, size_t len, ww_evt_ready_t *out);
 void ww_evt_ready_free(ww_evt_ready_t *m);
@@ -613,6 +674,16 @@ int  ww_evt_set_event_subscriptions_encode(const ww_evt_set_event_subscriptions_
 int  ww_evt_set_event_subscriptions_decode(const uint8_t *buf, size_t len, ww_evt_set_event_subscriptions_t *out);
 void ww_evt_set_event_subscriptions_free(ww_evt_set_event_subscriptions_t *m);
 uint32_t ww_evt_set_event_subscriptions_expected_fds(const ww_evt_set_event_subscriptions_t *m);
+
+int  ww_evt_render_target_capabilities_encode(const ww_evt_render_target_capabilities_t *m, ww_buf_t *out);
+int  ww_evt_render_target_capabilities_decode(const uint8_t *buf, size_t len, ww_evt_render_target_capabilities_t *out);
+void ww_evt_render_target_capabilities_free(ww_evt_render_target_capabilities_t *m);
+uint32_t ww_evt_render_target_capabilities_expected_fds(const ww_evt_render_target_capabilities_t *m);
+
+int  ww_evt_render_target_result_encode(const ww_evt_render_target_result_t *m, ww_buf_t *out);
+int  ww_evt_render_target_result_decode(const uint8_t *buf, size_t len, ww_evt_render_target_result_t *out);
+void ww_evt_render_target_result_free(ww_evt_render_target_result_t *m);
+uint32_t ww_evt_render_target_result_expected_fds(const ww_evt_render_target_result_t *m);
 
 /* --- Output buffer helpers --- */
 void ww_buf_init(ww_buf_t *b);

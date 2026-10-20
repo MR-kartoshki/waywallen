@@ -1,4 +1,5 @@
 use crate::settings::{AutoAction, AutoCondition, AutoReplayPolicy, AutoScope};
+use crate::wallframe::scheduler::DisplayRole;
 use tokio::time::Instant;
 
 pub const FLAG_NON_MINIMIZED: u32 = 1 << 0;
@@ -13,6 +14,7 @@ pub struct Facts {
     pub session_locked: bool,
     pub session_inactive: bool,
     pub gamemode: bool,
+    pub on_battery: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,7 +59,7 @@ struct RuleState {
 pub struct State {
     pub last_flags: u32,
     pub stop_applied: bool,
-    rules: [RuleState; 7],
+    rules: [RuleState; AutoCondition::ALL.len()],
     pub resume_token: u64,
 }
 
@@ -111,8 +113,25 @@ impl State {
     }
 
     pub fn effects(&self) -> Effects {
+        self.effects_for(DisplayRole::Desktop)
+    }
+
+    pub fn effects_for(&self, role: DisplayRole) -> Effects {
         let mut effects = Effects::default();
-        for rule in self.rules {
+        for (condition, rule) in AutoCondition::ALL.into_iter().zip(self.rules) {
+            if role == DisplayRole::LockScreen
+                && rule.requested.action == AutoAction::Pause
+                && matches!(
+                    condition,
+                    AutoCondition::AnyWindow
+                        | AutoCondition::Focused
+                        | AutoCondition::Maximized
+                        | AutoCondition::Fullscreen
+                        | AutoCondition::SessionLocked
+                )
+            {
+                continue;
+            }
             match rule.requested.action {
                 AutoAction::None => {}
                 AutoAction::Pause if rule.requested.scope == AutoScope::CurrentDisplay => {
@@ -140,6 +159,7 @@ fn condition_matches(condition: AutoCondition, facts: Facts) -> bool {
         AutoCondition::SessionLocked => facts.session_locked,
         AutoCondition::SessionInactive => facts.session_inactive,
         AutoCondition::GameMode => facts.gamemode,
+        AutoCondition::OnBattery => facts.on_battery,
     }
 }
 
@@ -153,7 +173,54 @@ mod tests {
             session_locked: false,
             session_inactive: false,
             gamemode: false,
+            on_battery: false,
         }
+    }
+
+    #[test]
+    fn lock_screen_filters_pause_sources_without_losing_other_actions_or_deadlines() {
+        let now = Instant::now();
+        let policy = AutoReplayPolicy {
+            session_locked: AutoAction::Pause,
+            session_inactive: AutoAction::Pause,
+            resume_delay_ms: 100,
+            ..Default::default()
+        };
+        let mut state = State::new();
+        let mut input = facts(0);
+        input.session_locked = true;
+        state.update(&policy, input, true, now, false);
+        assert!(state.effects().pause_all);
+        assert!(!state.effects_for(DisplayRole::LockScreen).pause_all);
+        input.session_inactive = true;
+        state.update(&policy, input, true, now, false);
+        assert!(state.effects_for(DisplayRole::LockScreen).pause_all);
+        input.session_inactive = false;
+        state.update(&policy, input, true, now, false);
+        assert!(state.effects_for(DisplayRole::LockScreen).pause_all);
+        state.update(
+            &policy,
+            input,
+            true,
+            now + std::time::Duration::from_millis(100),
+            false,
+        );
+        assert!(!state.effects_for(DisplayRole::LockScreen).pause_all);
+        assert!(state.effects().pause_all);
+        for action in [AutoAction::Stop, AutoAction::Mute] {
+            let mut policy = policy.clone();
+            policy.session_locked = action;
+            state.update(&policy, input, true, now, true);
+            assert_eq!(state.effects_for(DisplayRole::LockScreen), state.effects());
+        }
+        let mut policy = policy;
+        policy.fullscreen_scope = AutoScope::AllDisplays;
+        state.update(&policy, facts(FLAG_FULLSCREEN), false, now, true);
+        assert!(state.effects().pause_all);
+        assert_eq!(
+            state.effects_for(DisplayRole::LockScreen),
+            Effects::default()
+        );
     }
 
     #[test]

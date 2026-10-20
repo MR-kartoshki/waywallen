@@ -69,6 +69,22 @@ QtObject {
         return out;
     }
 
+    function playlistRuntimeText(playlist) {
+        let waiting = false;
+        for (const target of targetState.targets) {
+            for (const id of target.displayIds || []) {
+                const display = W.App.displayManager.get(id);
+                if (!display || String(display.activePlaylistId) !== String(playlist.id))
+                    continue;
+                const status = display.playlistStatus;
+                if (status.error)
+                    return status.error;
+                waiting = waiting || status.waiting;
+            }
+        }
+        return waiting ? qsTranslate("PlaylistEditPage", "Waiting for matching wallpapers") : "";
+    }
+
     function togglePlayback(playlist) {
         if (!playlist || root.playbackQuerying || !root.hasPlayTarget)
             return;
@@ -84,7 +100,7 @@ QtObject {
     }
 
     function editPlaylistItems(playlist) {
-        if (!playlist)
+        if (!playlist || playlist.sourceKind === "smart")
             return;
         page.beginPlaylistItemSelection(playlist.id, playlist.revision, playlist.entryIds || []);
     }
@@ -95,5 +111,9 @@ QtObject {
 
     function createPlaylist() {
         page.createEmptyPlaylist();
+    }
+
+    function createSmartPlaylist() {
+        page.openPlaylistEditor(0, true);
     }
 }

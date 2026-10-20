@@ -28,6 +28,7 @@ class Library : public QObject {
     QML_UNCREATABLE("Library instances are owned by LibraryManager")
 
     Q_PROPERTY(qint64 id READ id CONSTANT FINAL)
+    Q_PROPERTY(QString name READ name NOTIFY nameChanged FINAL)
     Q_PROPERTY(QString path READ path NOTIFY pathChanged FINAL)
     Q_PROPERTY(QString pluginName READ pluginName NOTIFY pluginNameChanged FINAL)
 
@@ -35,6 +36,7 @@ public:
     explicit Library(const proto::LibraryInstance& info, QObject* parent = nullptr);
 
     auto id() const -> qint64 { return m_id; }
+    auto name() const -> const QString& { return m_name; }
     auto path() const -> const QString& { return m_path; }
     auto pluginName() const -> const QString& { return m_plugin_name; }
 
@@ -43,10 +45,12 @@ public:
     void updateFrom(const proto::LibraryInstance& info);
 
     Q_SIGNAL void pathChanged();
+    Q_SIGNAL void nameChanged();
     Q_SIGNAL void pluginNameChanged();
 
 private:
     qint64  m_id;
+    QString m_name;
     QString m_path;
     QString m_plugin_name;
 };
@@ -64,6 +68,7 @@ class LibraryManager : public QObject {
 
     Q_PROPERTY(QVariantList libraries READ libraries NOTIFY librariesChanged FINAL)
     Q_PROPERTY(int count READ count NOTIFY librariesChanged FINAL)
+    Q_PROPERTY(bool initialized READ initialized NOTIFY librariesChanged FINAL)
 
 public:
     LibraryManager(QObject* parent = nullptr);
@@ -75,6 +80,7 @@ public:
     /// `Library*`, suitable for QML `Repeater { model: LibraryManager.libraries }`.
     auto libraries() const -> QVariantList;
     auto count() const -> int { return (int)m_ordered.size(); }
+    auto initialized() const -> bool { return m_initialized; }
 
     Q_INVOKABLE waywallen::Library* get(qint64 id) const;
 
@@ -101,6 +107,7 @@ private:
 
     QList<Library*>            m_ordered; // sorted by id
     std::map<qint64, Library*> m_by_id;
+    bool                       m_initialized { false };
 };
 
 } // namespace waywallen

@@ -13,10 +13,10 @@ Flow {
     MD.FilterChip {
         text: qsTr("All")
         enabled: control.enabled && control.targetState.hasTargets
-        checked: control.targetState.allTargets
-        onClicked: control.targetState.selectAll()
+        selected: control.targetState.allTargets
+        onSelectionRequested: control.targetState.selectAll()
 
-        MD.ToolTip.visible: hovered && control.allToolTip.length > 0
+        MD.ToolTip.visible: mdState.interactions.hovered && control.allToolTip.length > 0
         MD.ToolTip.text: control.allToolTip
     }
 
@@ -30,10 +30,10 @@ Flow {
             width: Math.min(implicitWidth, modelData.maximumWidth)
             text: modelData.label
             icon.name: modelData.iconName
-            checked: control.targetState.isSelected(modelData.key)
-            onClicked: control.targetState.toggleTarget(modelData.key)
+            selected: control.targetState.isSelected(modelData.key)
+            onSelectionRequested: control.targetState.toggleTarget(modelData.key)
 
-            MD.ToolTip.visible: hovered && modelData.toolTip.length > 0
+            MD.ToolTip.visible: mdState.interactions.hovered && modelData.toolTip.length > 0
             MD.ToolTip.text: modelData.toolTip
         }
     }

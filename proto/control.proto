@@ -106,6 +106,7 @@ message Request {
     WallpaperLookupRequest      wallpaper_lookup = 89;
     DisplayPauseSetRequest      display_pause_set = 90;
     WallpaperHideRequest        wallpaper_hide = 91;
+    LibraryRenameRequest        library_rename = 92;
   }
 }
 
@@ -199,6 +200,7 @@ message Response {
     WallpaperLookupResponse      wallpaper_lookup = 89;
     DisplayPauseSetResponse      display_pause_set = 90;
     WallpaperHideResponse        wallpaper_hide = 91;
+    Empty                        library_rename = 92;
   }
 }
 
@@ -555,6 +557,11 @@ message WallpaperEntry {
   bool update_available = 22;
 }
 
+message WallpaperLibraryVisibility {
+  // Empty hides no libraries, including remotely managed libraries.
+  repeated int64 hidden_library_ids = 1;
+}
+
 message WallpaperListRequest {
   string wp_type = 1; // empty = all
   // Page-based pagination. page is 0-indexed; page_size = 0 means "no
@@ -580,6 +587,9 @@ message WallpaperListRequest {
   repeated string skip_content_ratings = 11;
   // How to treat wallpapers marked hidden. Default EXCLUDE.
   WallpaperHiddenFilter hidden_filter = 12;
+  reserved 13;
+  reserved "library_selection";
+  WallpaperLibraryVisibility library_visibility = 14;
 }
 
 // Library-browser filter for the per-item `hidden` flag.
@@ -901,6 +911,12 @@ message DisplayInfo {
   bool effective_paused = 22;
   WindowExclusionSupport window_exclusion_support = 23;
   uint32 unsupported_window_exclusions = 24;
+  DisplayRole role = 25;
+}
+
+enum DisplayRole {
+  DISPLAY_ROLE_DESKTOP = 0;
+  DISPLAY_ROLE_LOCK_SCREEN = 1;
 }
 
 enum WindowExclusionSupport {
@@ -1186,6 +1202,9 @@ message RemoteItem {
   bool   downloaded = 5;
   string source_id = 6;
   string wp_type = 7;
+  // Optional picture of the author, as a URL the source plugin supplied.
+  // Empty when the source has none; the UI sizes it, not the source.
+  string author_avatar_url = 8;
 }
 
 message RemoteSearchRequest {
@@ -1234,6 +1253,9 @@ message RemoteDetailsResponse {
   // Empty unless the source knows an author it could not already put on the
   // RemoteItem, e.g. one only its per-item endpoint reports.
   string author = 8;
+  // Same as RemoteItem.author_avatar_url, for sources that only learn the
+  // author from their per-item endpoint.
+  string author_avatar_url = 9;
 }
 
 enum RemoteDownloadState {
@@ -1375,6 +1397,7 @@ message LibraryInstance {
   int64 id = 1;
   string path = 2;
   string plugin_name = 3;
+  string name = 4;
 }
 
 message LibraryListRequest {}
@@ -1385,6 +1408,12 @@ message LibraryListResponse {
 message LibraryAddRequest {
   string path = 1;
   string plugin_name = 2;
+  optional string name = 3;
+}
+
+message LibraryRenameRequest {
+  int64 id = 1;
+  string name = 2;
 }
 
 message LibraryRemoveRequest {
@@ -1661,6 +1690,10 @@ message GlobalSettings {
   // How the library browser treats wallpapers marked hidden. Persisted.
   // Default EXCLUDE.
   WallpaperHiddenFilter wallpaper_hidden_filter = 29;
+  reserved 30;
+  reserved "wallpaper_library_selection";
+  // Absent preserves hidden libraries; a present empty message shows all.
+  WallpaperLibraryVisibility wallpaper_library_visibility = 31;
 
   // Canonical automatic replay policy.
   AutoReplayPolicy auto_replay = 16;
@@ -1738,6 +1771,7 @@ message AutoReplayPolicy {
   AutoScope fullscreen_scope = 20;
   AutoAction gamemode = 21;
   WindowExclusions window_exclusions = 22;
+  AutoAction on_battery = 23;
 }
 
 enum PauseEffectKind {
@@ -1831,12 +1865,29 @@ message AutostartSetResponse {
 // Playlists
 // ---------------------------------------------------------------------------
 //
-// Filter / smart-playlist messages are intentionally absent in this
-// revision — the filter model will be reworked, so only curated
-// playlists (explicit ordered member list of DB item.id values) are
-// reachable from this surface for now. Smart playlists already
-// persisted in the DB stay activatable via PlaylistActivate; the
-// daemon handles them transparently through the resolve layer.
+message WallpaperSelection {
+  repeated WallpaperFilterRule filters = 1;
+  repeated FilterLogic filter_logics = 2;
+  repeated WallpaperSortRule sorts = 3;
+  string search_text = 4;
+  string wp_type = 5;
+  repeated string skip_types = 6;
+  repeated string filter_tags = 7;
+  repeated string skip_content_ratings = 8;
+  WallpaperHiddenFilter hidden_filter = 9;
+  repeated int64 hidden_library_ids = 10;
+}
+
+message CuratedPlaylistSource {
+  repeated string entry_ids = 1;
+}
+
+message PlaylistSource {
+  oneof kind {
+    CuratedPlaylistSource curated = 1;
+    WallpaperSelection smart = 2;
+  }
+}
 
 message PlaylistChanged {
   repeated PlaylistDisplayStatus displays = 1;
@@ -1850,10 +1901,7 @@ enum PlaylistMode {
   RANDOM     = 3;
 }
 
-// Compact summary for listing. `item_count` is `0` for smart
-// playlists in this revision (the resolve layer doesn't materialize
-// them outside the active state) — clients should treat it as a hint,
-// not a guarantee.
+// Counts are evaluated from the current database snapshot.
 message PlaylistSummary {
   int64  id = 1;
   string name = 2;
@@ -1864,6 +1912,7 @@ message PlaylistSummary {
   repeated string entry_ids = 7;
   int64 revision = 8;
   bool synchronized_selection = 9;
+  PlaylistSource source = 10;
 }
 
 message PlaylistListRequest {}
@@ -1873,6 +1922,9 @@ message PlaylistListResponse {
 
 message PlaylistGetRequest {
   int64 id = 1;
+  uint32 page = 2;
+  // Zero preserves the unpaged response for existing clients.
+  uint32 page_size = 3;
 }
 message PlaylistGetResponse {
   PlaylistSummary playlist = 1;
@@ -1887,6 +1939,7 @@ message PlaylistUpdateRequest {
   int64 expected_revision = 5;
   repeated string entry_ids = 6;
   bool synchronized_selection = 7;
+  PlaylistSource source = 8;
 }
 
 message PlaylistCreateRequest {
@@ -1895,6 +1948,7 @@ message PlaylistCreateRequest {
   uint32         interval_secs = 3;
   repeated string entry_ids = 4;
   bool synchronized_selection = 5;
+  PlaylistSource source = 6;
 }
 message PlaylistCreateResponse {
   int64 id = 1;
@@ -1945,6 +1999,8 @@ message PlaylistDisplayStatus {
   uint32 position = 6;
   uint32 count = 7;
   uint32 remaining_secs = 8;
+  bool waiting = 9;
+  string error = 10;
 }
 
 message PlaylistStatusRequest {}

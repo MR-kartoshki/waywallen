@@ -23,14 +23,22 @@ async fn library_directory(path: &str) -> Result<String> {
     Ok(path)
 }
 
-pub async fn add_library(app: &Arc<DaemonContext>, plugin_name: &str, path: &str) -> Result<()> {
+pub async fn add_library(
+    app: &Arc<DaemonContext>,
+    plugin_name: &str,
+    path: &str,
+    name: Option<&str>,
+) -> Result<()> {
+    let _invalidate =
+        crate::application::wallpaper_query::InvalidateOnDrop(app.wallpaper_changes.clone());
     let plugin = repo::find_plugin_by_name(&app.db, plugin_name)
         .await?
         .ok_or_else(|| Error::SourcePluginNotFound(plugin_name.to_owned()))?;
     let path = library_directory(path).await?;
-    let lib = repo::add_library(&app.db, plugin.id, &path).await?;
+    let lib = repo::add_named_library(&app.db, plugin.id, &path, name).await?;
     app.router.upsert_library(LibrarySnapshot {
         id: lib.id,
+        name: lib.name,
         path: lib.path.clone(),
         plugin_name: plugin_name.to_owned(),
     });
@@ -49,6 +57,20 @@ pub async fn add_library(app: &Arc<DaemonContext>, plugin_name: &str, path: &str
                 .map_err(anyhow::Error::from)
         },
     );
+    Ok(())
+}
+
+pub async fn rename_library(app: &Arc<DaemonContext>, id: i64, name: &str) -> Result<()> {
+    let lib = repo::rename_library(&app.db, id, name).await?;
+    let plugin = repo::find_plugin_by_id(&app.db, lib.plugin_id)
+        .await?
+        .ok_or_else(|| Error::SourcePluginNotFound(lib.plugin_id.to_string()))?;
+    app.router.upsert_library(LibrarySnapshot {
+        id: lib.id,
+        name: lib.name,
+        path: lib.path,
+        plugin_name: plugin.name,
+    });
     Ok(())
 }
 

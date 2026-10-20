@@ -39,6 +39,8 @@ pub(crate) struct DaemonContext {
     pub(crate) tasks: Arc<tasks::TaskManager>,
     pub(crate) probe: Arc<dyn MediaProbe>,
     pub(crate) playlists: playback::playlist::Engine,
+    pub(crate) wallpaper_changes: tokio::sync::watch::Sender<u64>,
+    pub(crate) playlist_mutation: tokio::sync::Mutex<()>,
     pub(crate) no_tray: bool,
     pub(crate) tray: tokio::sync::Mutex<Option<system::tray::TrayHandle>>,
 }

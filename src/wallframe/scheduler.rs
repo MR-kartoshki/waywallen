@@ -4,6 +4,26 @@ use std::collections::HashMap;
 /// across the daemon's lifetime, never reused.
 pub type DisplayId = u64;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DisplayRole {
+    #[default]
+    Desktop,
+    LockScreen,
+}
+
+impl DisplayRole {
+    pub fn accepts_global_pause(self) -> bool {
+        self == Self::Desktop
+    }
+
+    pub fn window_flags(self, flags: u32) -> u32 {
+        match self {
+            Self::Desktop => flags,
+            Self::LockScreen => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayMetrics {
     pub width: u32,
@@ -14,6 +34,7 @@ pub struct DisplayMetrics {
 /// Per-display bookkeeping visible to the scheduler.
 #[derive(Debug, Clone)]
 pub struct DisplayInfo {
+    pub role: DisplayRole,
     pub id: DisplayId,
     pub name: String,
     /// Stable consumer-provided identifier. `None` means the client did
@@ -110,6 +131,7 @@ impl Scheduler {
         self.displays.insert(
             id,
             DisplayInfo {
+                role: DisplayRole::Desktop,
                 id,
                 name,
                 instance_id: None,

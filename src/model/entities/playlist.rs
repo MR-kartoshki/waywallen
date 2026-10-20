@@ -37,6 +37,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     pub name: String,
+    pub smart_selection: Option<String>,
     pub mode: PlaylistMode,
     pub interval_secs: i64,
     pub synchronized_selection: bool,

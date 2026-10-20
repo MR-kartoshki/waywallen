@@ -33,6 +33,47 @@ impl PlaylistCursor {
         self.items.len()
     }
 
+    pub fn replace_items(&mut self, items: Vec<String>, mode: Mode) {
+        if self.items == items && self.mode == mode {
+            return;
+        }
+        if self.mode != mode {
+            let current = self.current.clone();
+            *self = Self::new(items, mode, self.rng);
+            if let Some(current) = current {
+                self.set_current(&current);
+            }
+            return;
+        }
+        let mut order = self
+            .order
+            .iter()
+            .filter_map(|index| {
+                self.items
+                    .get(*index)
+                    .and_then(|id| items.iter().position(|item| item == id))
+            })
+            .collect::<Vec<_>>();
+        let mut added = (0..items.len())
+            .filter(|index| !order.contains(index))
+            .collect::<Vec<_>>();
+        if mode == Mode::Shuffle {
+            for i in (1..added.len()).rev() {
+                let j = self.rng_range(i + 1);
+                added.swap(i, j);
+            }
+        }
+        order.extend(added);
+        let current = self.current.take();
+        self.items = items;
+        self.order = order;
+        self.pos = 0;
+        self.order_pos = 0;
+        if let Some(current) = current {
+            self.set_current(&current);
+        }
+    }
+
     fn rng_next(&mut self) -> u64 {
         let mut x = if self.rng == 0 {
             0xdead_beef_cafe_babe
@@ -203,5 +244,35 @@ mod tests {
             assert_ne!(cur, prev);
             prev = cur;
         }
+    }
+
+    #[test]
+    fn member_refresh_preserves_current_and_shuffle_history() {
+        let mut cursor = PlaylistCursor::new(items(), Mode::Shuffle, 42);
+        cursor.first();
+        cursor.next(1);
+        let current = cursor.current.clone();
+        let old_order = cursor
+            .order
+            .iter()
+            .map(|i| cursor.items[*i].clone())
+            .collect::<Vec<_>>();
+        cursor.replace_items(
+            vec!["c".into(), "b".into(), "a".into(), "d".into()],
+            Mode::Shuffle,
+        );
+        assert_eq!(cursor.current, current);
+        assert_eq!(
+            cursor
+                .order
+                .iter()
+                .take(3)
+                .map(|i| cursor.items[*i].clone())
+                .collect::<Vec<_>>(),
+            old_order
+        );
+        cursor.replace_items(vec![], Mode::Shuffle);
+        assert_eq!(cursor.current, None);
+        assert_eq!(cursor.first(), None);
     }
 }

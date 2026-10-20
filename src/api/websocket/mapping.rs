@@ -1,5 +1,145 @@
 use super::*;
 
+pub(super) fn selection_from_request(
+    r: &pb::WallpaperListRequest,
+) -> crate::error::Result<crate::catalog::query::WallpaperSelection> {
+    use crate::catalog::query::{HiddenFilter, WallpaperSelection};
+    let invalid = || Error::InvalidArgument("invalid wallpaper selection".into());
+    let selection = WallpaperSelection {
+        filters: r
+            .filters
+            .iter()
+            .map(|f| filter_rule_from_pb(f).ok_or_else(invalid))
+            .collect::<crate::error::Result<_>>()?,
+        logics: r
+            .filter_logics
+            .iter()
+            .map(|l| {
+                if !matches!(l.op, 1 | 2) {
+                    return Err(invalid());
+                }
+                Ok(filter_logic_from_pb(l))
+            })
+            .collect::<crate::error::Result<_>>()?,
+        sorts: r
+            .sorts
+            .iter()
+            .map(|s| {
+                if !matches!(s.direction, 0 | 1 | 2) {
+                    return Err(invalid());
+                }
+                sort_rule_from_pb(s).ok_or_else(invalid)
+            })
+            .collect::<crate::error::Result<_>>()?,
+        search_text: r.search_text.clone(),
+        wp_type: r.wp_type.clone(),
+        skip_types: r.skip_types.clone(),
+        filter_tags: r.filter_tags.clone(),
+        skip_content_ratings: r.skip_content_ratings.clone(),
+        hidden: match pb::WallpaperHiddenFilter::try_from(r.hidden_filter).map_err(|_| invalid())? {
+            pb::WallpaperHiddenFilter::Exclude => HiddenFilter::Exclude,
+            pb::WallpaperHiddenFilter::Include => HiddenFilter::Include,
+            pb::WallpaperHiddenFilter::Only => HiddenFilter::Only,
+        },
+        hidden_library_ids: library_visibility_from_pb(r.library_visibility.as_ref())?
+            .unwrap_or_default(),
+    };
+    selection.validate()?;
+    Ok(selection)
+}
+
+pub(super) fn library_visibility_from_pb(
+    selection: Option<&pb::WallpaperLibraryVisibility>,
+) -> crate::error::Result<Option<Vec<i64>>> {
+    selection
+        .map(|selection| repo::normalize_library_ids(&selection.hidden_library_ids))
+        .transpose()
+}
+
+pub(super) fn playlist_source_from_pb(
+    source: Option<&pb::PlaylistSource>,
+    legacy: &[String],
+) -> crate::error::Result<crate::model::playlist_source::PlaylistSource> {
+    use crate::model::playlist_source::PlaylistSource;
+    let invalid = || Error::PlaylistInvalid("invalid or ambiguous playlist source".into());
+    let parse_ids = |ids: &[String]| -> crate::error::Result<Vec<i64>> {
+        ids.iter()
+            .map(|id| id.parse::<i64>().map_err(|_| invalid()))
+            .collect()
+    };
+    let result = match source {
+        None => PlaylistSource::Curated(parse_ids(legacy)?),
+        Some(_) if !legacy.is_empty() => return Err(invalid()),
+        Some(source) => match source.kind.as_ref().ok_or_else(invalid)? {
+            pb::playlist_source::Kind::Curated(curated) => {
+                PlaylistSource::Curated(parse_ids(&curated.entry_ids)?)
+            }
+            pb::playlist_source::Kind::Smart(s) => {
+                PlaylistSource::Smart(selection_from_request(&pb::WallpaperListRequest {
+                    filters: s.filters.clone(),
+                    filter_logics: s.filter_logics.clone(),
+                    sorts: s.sorts.clone(),
+                    search_text: s.search_text.clone(),
+                    wp_type: s.wp_type.clone(),
+                    skip_types: s.skip_types.clone(),
+                    filter_tags: s.filter_tags.clone(),
+                    skip_content_ratings: s.skip_content_ratings.clone(),
+                    hidden_filter: s.hidden_filter,
+                    library_visibility: Some(pb::WallpaperLibraryVisibility {
+                        hidden_library_ids: s.hidden_library_ids.clone(),
+                    }),
+                    ..Default::default()
+                })?)
+            }
+        },
+    };
+    result.encode_selection()?;
+    Ok(result)
+}
+
+pub(super) fn playlist_source_to_pb(
+    source: &crate::model::playlist_source::PlaylistSource,
+) -> pb::PlaylistSource {
+    use crate::catalog::query::{HiddenFilter, LogicOperator};
+    use crate::model::playlist_source::PlaylistSource;
+    pb::PlaylistSource {
+        kind: Some(match source {
+            PlaylistSource::Curated(ids) => {
+                pb::playlist_source::Kind::Curated(pb::CuratedPlaylistSource {
+                    entry_ids: ids.iter().map(ToString::to_string).collect(),
+                })
+            }
+            PlaylistSource::Smart(s) => pb::playlist_source::Kind::Smart(pb::WallpaperSelection {
+                filters: s.filters.iter().map(filter_rule_to_pb).collect(),
+                filter_logics: s
+                    .logics
+                    .iter()
+                    .map(|l| pb::FilterLogic {
+                        op: match l.operator {
+                            LogicOperator::And => 1,
+                            LogicOperator::Or => 2,
+                        },
+                        group_a: l.group_a,
+                        group_b: l.group_b,
+                    })
+                    .collect(),
+                sorts: s.sorts.iter().map(sort_rule_to_pb).collect(),
+                search_text: s.search_text.clone(),
+                wp_type: s.wp_type.clone(),
+                skip_types: s.skip_types.clone(),
+                filter_tags: s.filter_tags.clone(),
+                skip_content_ratings: s.skip_content_ratings.clone(),
+                hidden_filter: match s.hidden {
+                    HiddenFilter::Exclude => 0,
+                    HiddenFilter::Include => 2,
+                    HiddenFilter::Only => 1,
+                },
+                hidden_library_ids: s.hidden_library_ids.clone(),
+            }),
+        }),
+    }
+}
+
 pub(super) fn filter_rule_from_pb(
     rule: &pb::WallpaperFilterRule,
 ) -> Option<crate::catalog::FilterRule> {
@@ -31,11 +171,21 @@ pub(super) fn filter_rule_from_pb(
             FilterPredicate::WallpaperType { value, condition }
         }
         pb::WallpaperFilterType::Library => {
-            let Payload::StringFilter(filter) = rule.payload.as_ref()? else {
+            let Payload::IntFilter(filter) = rule.payload.as_ref()? else {
                 return None;
             };
-            let (value, condition) = string(filter)?;
-            FilterPredicate::Library { value, condition }
+            if filter.value <= 0 {
+                return None;
+            }
+            let exclude = match pb::IntCondition::try_from(filter.condition).ok()? {
+                pb::IntCondition::Equal => false,
+                pb::IntCondition::EqualNot => true,
+                _ => return None,
+            };
+            FilterPredicate::Library {
+                value: filter.value,
+                exclude,
+            }
         }
         pb::WallpaperFilterType::Width => {
             let Payload::IntFilter(filter) = rule.payload.as_ref()? else {
@@ -143,11 +293,15 @@ pub(super) fn filter_rule_to_pb(rule: &crate::catalog::FilterRule) -> pb::Wallpa
                 condition: string_code(*condition),
             }),
         ),
-        FilterPredicate::Library { value, condition } => (
-            3,
-            pb::wallpaper_filter_rule::Payload::StringFilter(pb::WallpaperStringFilter {
-                value: value.clone(),
-                condition: string_code(*condition),
+        FilterPredicate::Library { value, exclude } => (
+            pb::WallpaperFilterType::Library as i32,
+            pb::wallpaper_filter_rule::Payload::IntFilter(pb::WallpaperIntFilter {
+                value: *value,
+                condition: if *exclude {
+                    pb::IntCondition::EqualNot
+                } else {
+                    pb::IntCondition::Equal
+                } as i32,
             }),
         ),
         FilterPredicate::Width { value, condition } => (
@@ -307,10 +461,17 @@ pub(super) fn display_snapshot_to_pb(
     let layout_key: &str = s
         .instance_id
         .as_deref()
-        .filter(|iid| settings.display_prefs(iid).is_some())
+        .filter(|iid| {
+            s.role == crate::wallframe::scheduler::DisplayRole::LockScreen
+                || settings.display_prefs(iid).is_some()
+        })
         .unwrap_or(s.name.as_str());
     let override_prefs = settings.display_prefs(layout_key).unwrap_or_default();
     pb::DisplayInfo {
+        role: match s.role {
+            crate::wallframe::scheduler::DisplayRole::Desktop => pb::DisplayRole::Desktop,
+            crate::wallframe::scheduler::DisplayRole::LockScreen => pb::DisplayRole::LockScreen,
+        } as i32,
         display_id: s.id,
         manual_paused: s.manual_paused,
         effective_paused: s.effective_paused,
@@ -667,6 +828,7 @@ pub(super) fn auto_replay_to_pb(p: &crate::settings::AutoReplayPolicy) -> pb::Au
         session_locked: auto_action_to_pb(p.session_locked) as i32,
         session_inactive: auto_action_to_pb(p.session_inactive) as i32,
         gamemode: auto_action_to_pb(p.gamemode) as i32,
+        on_battery: auto_action_to_pb(p.on_battery) as i32,
         resume_delay_ms: Some(p.effective_resume_delay_ms()),
     }
 }
@@ -681,6 +843,7 @@ pub(super) fn auto_replay_from_pb(
         p.fullscreen,
         p.session_locked,
         p.session_inactive,
+        p.on_battery,
     ] {
         pb::AutoAction::try_from(action).map_err(|_| {
             crate::error::Error::SettingsValidationFailed("unknown auto replay action".into())
@@ -725,6 +888,7 @@ pub(super) fn auto_replay_from_pb(
         session_locked: auto_action_from_pb(p.session_locked),
         session_inactive: auto_action_from_pb(p.session_inactive),
         gamemode: auto_action_from_pb(p.gamemode),
+        on_battery: auto_action_from_pb(p.on_battery),
         resume_delay_ms: p
             .resume_delay_ms
             .unwrap_or(crate::settings::DEFAULT_AUTO_REPLAY_RESUME_DELAY_MS)
@@ -886,6 +1050,9 @@ pub(super) fn global_to_pb(g: &crate::settings::GlobalSettings) -> pb::GlobalSet
         wallpaper_filter_tags: g.wallpaper_filter_tags.clone(),
         wallpaper_skip_content_ratings: g.wallpaper_skip_content_ratings.clone(),
         wallpaper_hidden_filter: wallpaper_hidden_filter_to_pb(g.wallpaper_hidden_filter) as i32,
+        wallpaper_library_visibility: Some(pb::WallpaperLibraryVisibility {
+            hidden_library_ids: g.wallpaper_hidden_library_ids.clone(),
+        }),
         disable_plugin_update_notifications: !g.plugin_update_notifications,
         duplicate_renderers_for_same_wallpaper: g.duplicate_renderers_for_same_wallpaper,
         renderer: Some(pb::GlobalRendererSettings {
@@ -1019,6 +1186,7 @@ pub(super) fn renderers_replace_event(
 pub(super) fn library_instance_to_pb(s: LibrarySnapshot) -> pb::LibraryInstance {
     pb::LibraryInstance {
         id: s.id,
+        name: s.name,
         path: s.path,
         plugin_name: s.plugin_name,
     }
@@ -1181,6 +1349,8 @@ pub(super) fn playlist_display_status_to_pb(
         position: d.position,
         count: d.count,
         remaining_secs: d.remaining_secs,
+        waiting: d.waiting,
+        error: d.error,
     }
 }
 

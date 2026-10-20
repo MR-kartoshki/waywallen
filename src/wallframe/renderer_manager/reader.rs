@@ -12,6 +12,7 @@ pub(super) fn run_reader(
     latest_frame: Arc<StdMutex<Option<FrameSnapshot>>>,
     release_syncobj: Arc<StdMutex<Option<OwnedFd>>>,
     format_caps: Arc<StdMutex<Option<crate::wallframe::dma::negotiate::PeerCaps>>>,
+    render_target: Arc<StdMutex<render_target::State>>,
     pending_configure: Arc<StdMutex<Option<u32>>>,
     reported_state: Arc<StdMutex<RendererReportedState>>,
     progress: Arc<StdMutex<RendererProgress>>,
@@ -241,6 +242,78 @@ pub(super) fn run_reader(
                 }
                 Err(e) => {
                     log::warn!("renderer {id}: FormatCaps malformed: {e:?}");
+                }
+            }
+        } else if let EventMsg::RenderTargetCapabilities { ref capabilities } = msg {
+            let mut state = render_target.lock().unwrap();
+            if state.policy == crate::plugin::renderer_registry::ResolutionPolicy::Auto {
+                match render_target::Capabilities::try_from(capabilities.clone()) {
+                    Ok(caps)
+                        if state
+                            .capabilities
+                            .as_ref()
+                            .is_none_or(|old| old.revision < caps.revision) =>
+                    {
+                        state.capabilities = Some(caps);
+                        state.problem = None;
+                    }
+                    Ok(caps) => {
+                        if state
+                            .capabilities
+                            .as_ref()
+                            .is_some_and(|old| old.revision == caps.revision && *old != caps)
+                        {
+                            state.problem = Some("auto_capabilities_revision_conflict".into());
+                            log::error!(
+                                "renderer {id}: Auto capabilities changed without a new revision"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        state.problem = Some(format!("auto_capabilities_invalid: {error}"));
+                        log::error!("renderer {id}: Auto capabilities rejected: {error}");
+                    }
+                }
+            }
+        } else if let EventMsg::RenderTargetResult { ref result } = msg {
+            let pool = published_pool.lock().unwrap().clone();
+            let mut state = render_target.lock().unwrap();
+            if let Some((revision, target)) = state.queue.pending().copied() {
+                if revision == result.revision {
+                    let success = result.status == 0
+                        && result.width == target.size.width
+                        && result.height == target.size.height
+                        && pool.as_ref().is_some_and(|pool| {
+                            pool.generation == result.pool_generation
+                                && pool.width == result.width
+                                && pool.height == result.height
+                        });
+                    state.queue.finish(revision, success);
+                    if success {
+                        state.applied_generation = Some(result.pool_generation);
+                        state.problem = None;
+                        state.retry = None;
+                        log::info!(
+                            "renderer {id}: render target {revision} applied {}x{} pool {}",
+                            result.width,
+                            result.height,
+                            result.pool_generation
+                        );
+                    } else {
+                        state.problem = Some(format!("auto_target_failed: {}", result.message));
+                        if result.status == 3 {
+                            if let Some(caps) = format_caps.lock().unwrap().as_mut() {
+                                caps.blacklist
+                                    .insert((target.scheme.fourcc, target.scheme.modifier));
+                                state.retry_allocation(target);
+                            }
+                        }
+                        log::error!(
+                            "renderer {id}: render target {revision} failed: status={} {}",
+                            result.status,
+                            result.message
+                        );
+                    }
                 }
             }
         } else if let EventMsg::BindFailed { ref failure } = msg {

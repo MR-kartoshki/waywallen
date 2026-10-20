@@ -162,6 +162,8 @@ async fn upsert_remote_download(
     path: &Path,
     info: &DiscoverDownload,
 ) -> Result<()> {
+    let _invalidate =
+        crate::application::wallpaper_query::InvalidateOnDrop(state.wallpaper_changes.clone());
     if info.wp_type.trim().is_empty() {
         return Err(anyhow!("download wp_type is empty"));
     }
@@ -257,6 +259,8 @@ pub async fn remove_wallpaper_entry_files_and_db(
     state: &Arc<DaemonContext>,
     entry: &WallpaperEntry,
 ) -> Result<()> {
+    let _invalidate =
+        crate::application::wallpaper_query::InvalidateOnDrop(state.wallpaper_changes.clone());
     let libraries = source_libraries_for_plugin(state, &entry.plugin_name).await?;
     state
         .source_manager

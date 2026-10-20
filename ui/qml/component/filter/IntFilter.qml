@@ -27,7 +27,7 @@ QtObject {
             id: valueChip
             visible: root.condition !== WC.IntCondition.INT_CONDITION_UNSPECIFIED
             text: String(root.value)
-            onClicked: edit = true
+            onSelectionRequested: edit = true
             editDelegate: MD.TextInput {
                 text: String(root.value)
                 validator: IntValidator {}

@@ -477,7 +477,7 @@ Item {
                         icon.name: MD.Token.icon.close
                         hoverEnabled: true
                         MD.ToolTip.text: qsTr("Close")
-                        MD.ToolTip.visible: hovered && !pressed
+                        MD.ToolTip.visible: mdState.interactions.hovered && !mdState.interactions.pressed
                         onClicked: root.back()
                     }
                 }
@@ -663,7 +663,7 @@ Item {
                             mdState.size: MD.Enum.XS
                             enabled: root.wallpaperLayoutOverrideSet
                             onClicked: root.resetWallpaperLayout()
-                            MD.ToolTip.visible: hovered
+                            MD.ToolTip.visible: mdState.interactions.hovered
                             MD.ToolTip.text: qsTr("Reset to display layout")
                         }
                     }
@@ -704,7 +704,7 @@ Item {
                                 mdState.size: MD.Enum.S
                                 model: root.kFillModeLabels
                                 currentIndex: root.fillmodeIndex(m_wallpaper_layout_flow.currentFillmode)
-                                onActivated: idx => {
+                                onSelectionChangeRequested: idx => {
                                     root.applyWallpaperLayout(root.kFillModeValues[idx], m_wallpaper_layout_flow.currentX, m_wallpaper_layout_flow.currentY, m_wallpaper_layout_flow.currentRotation);
                                 }
                             }
@@ -732,7 +732,7 @@ Item {
                                 valueText: root.clampPercent(value)
                                 valueMaxText: root.clampPercent(to).toString()
                                 valueHorizontalAlignment: Text.AlignLeft
-                                onMoved: root.applyWallpaperLayout(m_wallpaper_layout_flow.currentFillmode, value, wallpaperVerticalLocation.value, m_wallpaper_layout_flow.currentRotation)
+                                onValueChangeRequested: value => root.applyWallpaperLayout(m_wallpaper_layout_flow.currentFillmode, value, wallpaperVerticalLocation.value, m_wallpaper_layout_flow.currentRotation)
                             }
                         }
 
@@ -758,7 +758,7 @@ Item {
                                 valueText: root.clampPercent(value)
                                 valueMaxText: root.clampPercent(to).toString()
                                 valueHorizontalAlignment: Text.AlignLeft
-                                onMoved: root.applyWallpaperLayout(m_wallpaper_layout_flow.currentFillmode, wallpaperHorizontalLocation.value, value, m_wallpaper_layout_flow.currentRotation)
+                                onValueChangeRequested: value => root.applyWallpaperLayout(m_wallpaper_layout_flow.currentFillmode, wallpaperHorizontalLocation.value, value, m_wallpaper_layout_flow.currentRotation)
                             }
                         }
 
@@ -786,22 +786,22 @@ Item {
                                 MD.SegmentedButton {
                                     text: root.kRotationLabels[0]
                                     checked: wallpaperRotationGroup.isChecked(root.kRotationValues[0])
-                                    onClicked: wallpaperRotationGroup.applyRotation(root.kRotationValues[0])
+                                    onCheckedChangeRequested: wallpaperRotationGroup.applyRotation(root.kRotationValues[0])
                                 }
                                 MD.SegmentedButton {
                                     text: root.kRotationLabels[1]
                                     checked: wallpaperRotationGroup.isChecked(root.kRotationValues[1])
-                                    onClicked: wallpaperRotationGroup.applyRotation(root.kRotationValues[1])
+                                    onCheckedChangeRequested: wallpaperRotationGroup.applyRotation(root.kRotationValues[1])
                                 }
                                 MD.SegmentedButton {
                                     text: root.kRotationLabels[2]
                                     checked: wallpaperRotationGroup.isChecked(root.kRotationValues[2])
-                                    onClicked: wallpaperRotationGroup.applyRotation(root.kRotationValues[2])
+                                    onCheckedChangeRequested: wallpaperRotationGroup.applyRotation(root.kRotationValues[2])
                                 }
                                 MD.SegmentedButton {
                                     text: root.kRotationLabels[3]
                                     checked: wallpaperRotationGroup.isChecked(root.kRotationValues[3])
-                                    onClicked: wallpaperRotationGroup.applyRotation(root.kRotationValues[3])
+                                    onCheckedChangeRequested: wallpaperRotationGroup.applyRotation(root.kRotationValues[3])
                                 }
                             }
 
@@ -860,7 +860,7 @@ Item {
                             else
                                 propertyModel.resetUserProperties();
                         }
-                        MD.ToolTip.visible: hovered
+                        MD.ToolTip.visible: mdState.interactions.hovered
                         MD.ToolTip.text: qsTr("Reset to defaults")
                     }
                 }
@@ -912,7 +912,7 @@ Item {
                 MD.Switch {
                     id: m_switch
                     visible: m_prop_delegate.type === "bool"
-                    onToggled: propertyModel.setValue(m_prop_delegate.key, checked ? "true" : "false")
+                    onCheckedChangeRequested: checked => propertyModel.setValue(m_prop_delegate.key, checked ? "true" : "false")
                 }
                 Binding {
                     target: m_switch
@@ -937,7 +937,7 @@ Item {
                     function displayValue(v) {
                         return Number(v).toFixed(m_prop_delegate.maxVal > 10 ? 0 : 3) + m_prop_delegate.valueSuffix;
                     }
-                    onMoved: propertyModel.setValue(m_prop_delegate.key, String(value))
+                    onValueChangeRequested: value => propertyModel.setValue(m_prop_delegate.key, String(value))
                 }
                 Binding {
                     target: m_slider
@@ -983,7 +983,7 @@ Item {
                     mdState.size: MD.Enum.S
                     popupMaximumHeight: Math.min(320, (Window.window?.height ?? 480) * 0.45)
                     model: m_prop_delegate.optionLabels || []
-                    onActivated: idx => {
+                    onSelectionChangeRequested: idx => {
                         const values = m_prop_delegate.optionValues || [];
                         if (idx >= 0 && idx < values.length)
                             propertyModel.setValue(m_prop_delegate.key, String(values[idx]));
@@ -1060,8 +1060,8 @@ Item {
                             required property var modelData
                             required property int index
                             text: modelData?.name || ""
-                            checked: root.rendererIndex === index
-                            onClicked: root.rendererIndex = index
+                            selected: root.rendererIndex === index
+                            onSelectionRequested: root.rendererIndex = index
                         }
                     }
                 }
@@ -1070,9 +1070,14 @@ Item {
             MD.BusyButton {
                 id: applyBtn
                 Layout.fillWidth: true
-                action: root.activeApplyAction
+                MD.ActionCommand.action: root.activeApplyAction
+                text: MD.ActionCommand.text
+                icon.actionIcon: MD.ActionCommand.icon
+                enabled: MD.ActionCommand.enabled
+                busy: MD.ActionCommand.action?.busy ?? MD.Enum.Idle
+                progress: MD.ActionCommand.action?.progress ?? 0
                 mdState.type: MD.Enum.BtFilled
-                MD.ToolTip.visible: applyBtn.hovered && !applyBtn.enabled
+                MD.ToolTip.visible: applyBtn.mdState.interactions.hovered && !applyBtn.enabled
                 MD.ToolTip.text: qsTr("No display connected")
             }
         }

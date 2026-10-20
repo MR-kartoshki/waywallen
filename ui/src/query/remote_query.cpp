@@ -319,6 +319,7 @@ void RemoteSearchQuery::fetchPage(quint32 page, bool append) {
                     it.title(),
                     it.previewUrl(),
                     it.author(),
+                    it.authorAvatarUrl(),
                     it.wpType(),
                     it.downloaded() ? 3 : 0,
                 });
@@ -360,6 +361,7 @@ void RemoteDetailsQuery::setItemId(const QString& v) {
     }
 }
 auto RemoteDetailsQuery::author() const -> const QString& { return m_author; }
+auto RemoteDetailsQuery::authorAvatarUrl() const -> const QString& { return m_author_avatar_url; }
 auto RemoteDetailsQuery::description() const -> const QString& { return m_description; }
 auto RemoteDetailsQuery::size() const -> const QString& { return m_size; }
 auto RemoteDetailsQuery::width() const -> int { return m_width; }
@@ -369,6 +371,7 @@ auto RemoteDetailsQuery::webUrl() const -> const QString& { return m_web_url; }
 
 void RemoteDetailsQuery::reload() {
     m_author.clear();
+    m_author_avatar_url.clear();
     m_description.clear();
     m_size.clear();
     m_width  = 0;
@@ -393,13 +396,14 @@ void RemoteDetailsQuery::reload() {
         if (! self) co_return;
 
         self->inspect_set(result, [self](const proto::Response& rsp) {
-            const auto& dr      = rsp.remoteDetails();
-            self->m_author      = dr.author();
-            self->m_description = dr.description();
-            self->m_size        = dr.size();
-            self->m_width       = static_cast<int>(dr.width());
-            self->m_height      = static_cast<int>(dr.height());
-            self->m_web_url     = dr.webUrl();
+            const auto& dr            = rsp.remoteDetails();
+            self->m_author            = dr.author();
+            self->m_author_avatar_url = dr.authorAvatarUrl();
+            self->m_description       = dr.description();
+            self->m_size              = dr.size();
+            self->m_width             = static_cast<int>(dr.width());
+            self->m_height            = static_cast<int>(dr.height());
+            self->m_web_url           = dr.webUrl();
             self->m_tags.clear();
             for (const auto& t : dr.tags()) self->m_tags.push_back(t);
             Q_EMIT self->loaded();

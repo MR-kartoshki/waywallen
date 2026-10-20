@@ -115,10 +115,11 @@ pub enum AutoCondition {
     SessionLocked,
     SessionInactive,
     GameMode,
+    OnBattery,
 }
 
 impl AutoCondition {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::AnyWindow,
         Self::Focused,
         Self::Maximized,
@@ -126,12 +127,13 @@ impl AutoCondition {
         Self::SessionLocked,
         Self::SessionInactive,
         Self::GameMode,
+        Self::OnBattery,
     ];
 
     pub fn is_global(self) -> bool {
         matches!(
             self,
-            Self::SessionLocked | Self::SessionInactive | Self::GameMode
+            Self::SessionLocked | Self::SessionInactive | Self::GameMode | Self::OnBattery
         )
     }
 }
@@ -248,6 +250,7 @@ pub struct AutoReplayPolicy {
     pub session_locked: AutoAction,
     pub session_inactive: AutoAction,
     pub gamemode: AutoAction,
+    pub on_battery: AutoAction,
     pub resume_delay_ms: u32,
 }
 
@@ -266,6 +269,7 @@ impl Default for AutoReplayPolicy {
             session_locked: AutoAction::Stop,
             session_inactive: AutoAction::Stop,
             gamemode: AutoAction::None,
+            on_battery: AutoAction::None,
             resume_delay_ms: DEFAULT_AUTO_REPLAY_RESUME_DELAY_MS,
         }
     }
@@ -330,6 +334,7 @@ impl AutoReplayPolicy {
             AutoCondition::SessionLocked => self.session_locked,
             AutoCondition::SessionInactive => self.session_inactive,
             AutoCondition::GameMode => self.gamemode,
+            AutoCondition::OnBattery => self.on_battery,
         }
     }
 
@@ -342,6 +347,7 @@ impl AutoReplayPolicy {
             AutoCondition::SessionLocked => &mut self.session_locked,
             AutoCondition::SessionInactive => &mut self.session_inactive,
             AutoCondition::GameMode => &mut self.gamemode,
+            AutoCondition::OnBattery => &mut self.on_battery,
         };
         *slot = action;
     }
@@ -548,6 +554,9 @@ pub struct GlobalSettings {
     pub wallpaper_hidden_filter: WallpaperHiddenFilter,
 
     #[serde(default)]
+    pub wallpaper_hidden_library_ids: Vec<i64>,
+
+    #[serde(default)]
     pub auto_attach_playlist_id: Option<i64>,
 
     pub plugin_update_notifications: bool,
@@ -588,6 +597,7 @@ impl Default for GlobalSettings {
             wallpaper_filter_tags: Vec::new(),
             wallpaper_skip_content_ratings: Vec::new(),
             wallpaper_hidden_filter: WallpaperHiddenFilter::Exclude,
+            wallpaper_hidden_library_ids: Vec::new(),
             auto_attach_playlist_id: None,
             plugin_update_notifications: true,
             duplicate_renderers_for_same_wallpaper: false,
@@ -800,8 +810,19 @@ impl WallpaperFilterState {
                         FilterPredicate::WallpaperType { value, condition }
                     }
                     3 => {
-                        let (value, condition) = string()?;
-                        FilterPredicate::Library { value, condition }
+                        let filter = rule.int_filter.as_ref()?;
+                        if filter.value <= 0 {
+                            return None;
+                        }
+                        let exclude = match filter.condition {
+                            1 => false,
+                            2 => true,
+                            _ => return None,
+                        };
+                        FilterPredicate::Library {
+                            value: filter.value,
+                            exclude,
+                        }
                     }
                     5 => {
                         let (value, condition) = int()?;
@@ -895,11 +916,11 @@ impl WallpaperFilterState {
                                 condition: string_code(*condition),
                             });
                         }
-                        FilterPredicate::Library { value, condition } => {
+                        FilterPredicate::Library { value, exclude } => {
                             state.r#type = 3;
-                            state.string_filter = Some(WallpaperStringFilterState {
-                                value: value.clone(),
-                                condition: string_code(*condition),
+                            state.int_filter = Some(WallpaperIntFilterState {
+                                value: *value,
+                                condition: if *exclude { 2 } else { 1 },
                             });
                         }
                         FilterPredicate::Width { value, condition } => {
@@ -1017,6 +1038,7 @@ impl Settings {
                 if policy.session_locked != global.session_locked
                     || policy.session_inactive != global.session_inactive
                     || policy.gamemode != global.gamemode
+                    || policy.on_battery != global.on_battery
                 {
                     log::warn!(
                         "display {name}: migrating global auto replay conditions to global policy"
@@ -1024,6 +1046,7 @@ impl Settings {
                     policy.session_locked = global.session_locked;
                     policy.session_inactive = global.session_inactive;
                     policy.gamemode = global.gamemode;
+                    policy.on_battery = global.on_battery;
                     changed = true;
                 }
             }

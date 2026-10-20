@@ -13,11 +13,26 @@ QtObject {
     property bool _syncing: false
 
     readonly property var conditionModel: [
-        { name: qsTr("contains"),     value: WC.StringCondition.STRING_CONDITION_CONTAINS },
-        { name: qsTr("not contains"), value: WC.StringCondition.STRING_CONDITION_CONTAINS_NOT },
-        { name: qsTr("is"),           value: WC.StringCondition.STRING_CONDITION_IS },
-        { name: qsTr("is not"),       value: WC.StringCondition.STRING_CONDITION_IS_NOT },
-        { name: qsTr("any"),          value: WC.StringCondition.STRING_CONDITION_UNSPECIFIED }
+        {
+            name: qsTr("contains"),
+            value: WC.StringCondition.STRING_CONDITION_CONTAINS
+        },
+        {
+            name: qsTr("not contains"),
+            value: WC.StringCondition.STRING_CONDITION_CONTAINS_NOT
+        },
+        {
+            name: qsTr("is"),
+            value: WC.StringCondition.STRING_CONDITION_IS
+        },
+        {
+            name: qsTr("is not"),
+            value: WC.StringCondition.STRING_CONDITION_IS_NOT
+        },
+        {
+            name: qsTr("any"),
+            value: WC.StringCondition.STRING_CONDITION_UNSPECIFIED
+        }
     ]
 
     readonly property Component valueDelegate: Component {
@@ -25,12 +40,39 @@ QtObject {
             id: valueChip
             visible: root.condition !== WC.StringCondition.STRING_CONDITION_UNSPECIFIED
             text: root.value
-            onClicked: edit = true
-            editDelegate: MD.TextInput {
-                text: root.value
-                onAccepted: {
-                    root.value = text;
+            rightPadding: edit ? 0 : 16
+            onSelectionRequested: edit = true
+            editDelegate: FocusScope {
+                id: editor
+                implicitWidth: Math.max(16, input.implicitWidth) + 4 + confirmButton.implicitWidth
+                implicitHeight: Math.max(input.implicitHeight, confirmButton.implicitHeight)
+
+                function submit() {
+                    root.value = input.text;
                     valueChip.edit = false;
+                }
+
+                MD.TextInput {
+                    id: input
+                    anchors.left: parent.left
+                    anchors.right: confirmButton.left
+                    anchors.rightMargin: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    focus: true
+                    text: root.value
+                    onAccepted: editor.submit()
+                }
+
+                MD.IconButton {
+                    id: confirmButton
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    mdState.size: MD.Enum.XS
+                    icon.name: MD.Token.icon.check
+                    Accessible.name: qsTr("Apply")
+                    onClicked: editor.submit()
+                    MD.ToolTip.visible: mdState.interactions.hovered
+                    MD.ToolTip.text: qsTr("Apply")
                 }
             }
         }

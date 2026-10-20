@@ -35,6 +35,14 @@ MD.BottomSheet {
         onTriggered: control.sheetState.createPlaylist()
     }
 
+    MD.Action {
+        id: createSmartPlaylistAction
+        text: qsTr("Create smart playlist")
+        icon.name: MD.Token.icon.filter_plus
+        enabled: !control.sheetState.mutationQuerying
+        onTriggered: control.sheetState.createSmartPlaylist()
+    }
+
     ColumnLayout {
         width: control.sheetWidth
         spacing: 0
@@ -65,13 +73,18 @@ MD.BottomSheet {
 
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                actions: [hiddenWallpapersAction, createPlaylistAction]
+                actions: [hiddenWallpapersAction, createPlaylistAction, createSmartPlaylistAction]
                 iconDelegate: MD.BusyIconButton {
                     id: actionButton
-                    action: MD.ToolBarLayout.action
+                    MD.ActionCommand.action: MD.ToolBarLayout.action
+                    text: MD.ActionCommand.text
+                    icon.actionIcon: MD.ActionCommand.icon
+                    enabled: MD.ActionCommand.enabled
+                    busy: MD.ActionCommand.action?.busy ?? MD.Enum.Idle
+                    progress: MD.ActionCommand.action?.progress ?? 0
                     hoverEnabled: true
-                    MD.ToolTip.text: actionButton.action?.text || ""
-                    MD.ToolTip.visible: actionButton.hovered && !actionButton.pressed
+                    MD.ToolTip.text: actionButton.text
+                    MD.ToolTip.visible: actionButton.mdState.interactions.hovered && !actionButton.mdState.interactions.pressed
                 }
             }
         }
@@ -128,7 +141,7 @@ MD.BottomSheet {
                 width: ListView.view.contentWidth
                 radius: 12
                 text: modelData.name || qsTr("Untitled")
-                supportText: qsTr("%n wallpaper(s)", "", (modelData.entryIds || []).length)
+                supportText: control.sheetState.playlistRuntimeText(modelData) || ((modelData.sourceKind === "smart" ? qsTr("Smart playlist") + " · " : "") + qsTr("%n wallpaper(s)", "", modelData.itemCount || 0))
                 heightMode: playingDisplayLabels.length > 0 ? MD.Enum.ListItemThreeLine : MD.Enum.ListItemTwoLine
                 readonly property bool playingOnSelectedTargets: control.sheetState.playlistIsPlayingOnSelectedTargets(modelData)
                 readonly property var playingDisplayLabels: control.sheetState.playlistDisplayLabels(modelData)
@@ -167,7 +180,7 @@ MD.BottomSheet {
                         busy: control.sheetState.playlistPlaybackMutation.querying
                         icon.name: playlistSheetItem.playingOnSelectedTargets ? MD.Token.icon.pause : MD.Token.icon.play_arrow
                         onClicked: control.sheetState.togglePlayback(playlistSheetItem.modelData)
-                        MD.ToolTip.visible: hovered && !control.sheetState.playbackQuerying
+                        MD.ToolTip.visible: mdState.interactions.hovered && !control.sheetState.playbackQuerying
                         MD.ToolTip.text: !control.sheetState.hasPlayTarget ? qsTr("No displays") : playlistSheetItem.playingOnSelectedTargets ? qsTr("Pause playlist") : qsTr("Play playlist")
                     }
 
@@ -175,15 +188,16 @@ MD.BottomSheet {
                         enabled: !control.sheetState.mutationQuerying
                         icon.name: MD.Token.icon.edit
                         onClicked: control.sheetState.editPlaylist(playlistSheetItem.modelData)
-                        MD.ToolTip.visible: hovered
+                        MD.ToolTip.visible: mdState.interactions.hovered
                         MD.ToolTip.text: qsTr("Edit playlist")
                     }
 
                     MD.IconButton {
+                        visible: playlistSheetItem.modelData.sourceKind !== "smart"
                         enabled: !control.sheetState.mutationQuerying
                         icon.name: MD.Token.icon.edit_note
                         onClicked: control.sheetState.editPlaylistItems(playlistSheetItem.modelData)
-                        MD.ToolTip.visible: hovered
+                        MD.ToolTip.visible: mdState.interactions.hovered
                         MD.ToolTip.text: qsTr("Edit wallpapers")
                     }
 
@@ -191,7 +205,7 @@ MD.BottomSheet {
                         enabled: !control.sheetState.mutationQuerying
                         icon.name: MD.Token.icon.delete
                         onClicked: control.sheetState.deletePlaylist(playlistSheetItem.modelData)
-                        MD.ToolTip.visible: hovered
+                        MD.ToolTip.visible: mdState.interactions.hovered
                         MD.ToolTip.text: qsTr("Delete playlist")
                     }
                 }

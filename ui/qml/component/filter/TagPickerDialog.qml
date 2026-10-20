@@ -104,10 +104,9 @@ MD.Dialog {
                     model: control.tags()
                     delegate: MD.FilterChip {
                         required property var modelData
-                        checkable: false
                         text: control.tagLabel(modelData)
-                        checked: (control.pending || []).indexOf(modelData) >= 0
-                        onClicked: control.togglePending(modelData)
+                        selected: (control.pending || []).indexOf(modelData) >= 0
+                        onSelectionRequested: control.togglePending(modelData)
                     }
                 }
             }

@@ -707,7 +707,17 @@ static int backend_init(ww_pool_t* pool, const void* init_data) {
     return 0;
 }
 
+static int fork_allocation(const ww_pool_t* source, ww_pool_t* candidate) {
+    vk_state_t* st = malloc(sizeof(*st));
+    if (! st) return -ENOMEM;
+    *st = *(const vk_state_t*)source->backend_data;
+    memset(st->slots, 0, sizeof(st->slots));
+    candidate->backend_data = st;
+    return 0;
+}
+
 static const struct ww_pool_backend_ops kVulkanOps = {
+    .fork_allocation    = fork_allocation,
     .init               = backend_init,
     .probe_caps         = probe_caps,
     .alloc_slot         = alloc_slot,
